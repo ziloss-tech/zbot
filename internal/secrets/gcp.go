@@ -47,12 +47,15 @@ func (s *GCPSecretManager) Close() error {
 
 // SecretNames centralizes all secret name constants.
 // Add new secrets here — never scatter string literals through the codebase.
+// SecretNames maps to actual GCP Secret Manager names in the ziloss project.
+// Using existing secrets where possible — only zbot-telegram-token is new.
 const (
-	SecretAnthropicAPIKey = "zbot-anthropic-api-key"
-	SecretOpenAIAPIKey    = "zbot-openai-api-key"
-	SecretTelegramToken   = "zbot-telegram-token"
-	SecretDBPassword      = "zbot-db-password"
-	SecretProxyURL        = "zbot-proxy-url"
+	SecretAnthropicAPIKey = "ANTHROPIC_API_KEY"    // existing
+	SecretOpenAIAPIKey    = "openai-api-key"        // existing
+	SecretBraveAPIKey     = "brave-search-api-key"  // existing
+	SecretDatabaseURL     = "database-url"          // existing (full postgres URL)
+	SecretTelegramToken   = "zbot-telegram-token"   // new — add after BotFather setup
+	SecretProxyURL        = "zbot-proxy-url"        // new — optional, Sprint 4 only
 )
 
 // Ensure GCPSecretManager implements the port.

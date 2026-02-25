@@ -50,6 +50,7 @@ type AppConfig struct {
 func DefaultAppConfig() AppConfig {
 	return AppConfig{
 		Env:           "development",
+		GCPProject:    "ziloss",
 		WorkerCount:   3,
 		GatewayPort:   18790,
 		WorkspaceRoot: os.ExpandEnv("$HOME/zbot-workspace"),
