@@ -192,6 +192,16 @@ func (o *Orchestrator) runTask(ctx context.Context, workerID string, task *agent
 	return nil
 }
 
+// Status returns all tasks for a workflow (for /status command).
+func (o *Orchestrator) Status(ctx context.Context, workflowID string) ([]agent.Task, error) {
+	return o.store.GetWorkflowStatus(ctx, workflowID)
+}
+
+// Cancel cancels all pending tasks in a workflow.
+func (o *Orchestrator) Cancel(ctx context.Context, workflowID string) error {
+	return o.store.CancelWorkflow(ctx, workflowID)
+}
+
 // decompose asks the agent to break a request into a task graph.
 // Returns a slice of Tasks with dependency edges set.
 func (o *Orchestrator) decompose(ctx context.Context, sessionID, request string) ([]agent.Task, error) {
