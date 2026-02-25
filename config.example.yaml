@@ -1,0 +1,34 @@
+# ZBOT Configuration Example
+# Copy to config.yaml — config.yaml is gitignored (never committed)
+# All secrets come from GCP Secret Manager — never put them here
+
+env: development         # development | production
+gcp_project: ""         # your GCP project ID (required in production)
+
+# Database (GCP Cloud SQL — same instance as Ziloss mem0)
+db_host: "34.28.163.109"
+db_name: "ziloss"
+db_user: "zbot"
+# DB password retrieved from GCP Secret Manager at runtime: zbot-db-password
+
+# Telegram
+# allowFrom: restrict to your Telegram user ID for security
+# Find yours by messaging @userinfobot on Telegram
+telegram_allow_from:
+  - ""   # your Telegram user ID
+
+# Workflow
+worker_count: 3          # parallel workflow workers
+
+# WebUI (loopback only — access via Tailscale)
+gateway_port: 18790
+
+# Workspace
+workspace_dir: ./workspace  # agent's working directory for files
+
+# Scraper
+proxy_enabled: false        # enable residential proxy pool (Phase 3)
+respect_robots_txt: true    # honor robots.txt (recommended)
+domain_blocklist:           # never scrape these (add as needed)
+  - "linkedin.com"
+  - "facebook.com"

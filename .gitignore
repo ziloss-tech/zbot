@@ -1,0 +1,41 @@
+# Binaries
+bin/
+*.exe
+*.out
+zbot
+
+# Go
+vendor/
+*.test
+*.bench
+
+# Secrets — never committed
+.env
+*.key
+*.pem
+secrets.json
+service-account.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+
+# Temp
+tmp/
+.tmp/

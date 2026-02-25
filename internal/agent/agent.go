@@ -1,0 +1,256 @@
+// Package agent implements the core ZBOT agent loop.
+// It orchestrates: receive message → load context → call LLM → execute tools → respond.
+// This package depends ONLY on the interfaces defined in ports.go — never on adapters.
+package agent
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+)
+
+// Config holds the agent's runtime configuration.
+// All sensitive values (API keys) come via SecretsManager — never here.
+type Config struct {
+	// SystemPrompt is the base instruction set for the agent.
+	SystemPrompt string
+
+	// MaxToolRounds is the maximum number of tool call / result cycles per turn.
+	// Prevents infinite loops. Default: 10.
+	MaxToolRounds int
+
+	// MemorySearchLimit is how many facts to inject per turn.
+	MemorySearchLimit int
+
+	// TokenWarningThreshold triggers a memory flush at this fraction of context used.
+	// Default: 0.75 (flush at 75% context usage).
+	TokenWarningThreshold float64
+}
+
+// DefaultConfig returns safe production defaults.
+func DefaultConfig() Config {
+	return Config{
+		MaxToolRounds:         10,
+		MemorySearchLimit:     8,
+		TokenWarningThreshold: 0.75,
+	}
+}
+
+// Agent is the core agent. It is stateless between turns —
+// all state lives in the stores passed at construction.
+type Agent struct {
+	cfg     Config
+	llm     LLMClient
+	memory  MemoryStore
+	tools   map[string]Tool
+	audit   AuditLogger
+	logger  *slog.Logger
+}
+
+// New constructs an Agent. All dependencies are injected as interfaces.
+func New(
+	cfg Config,
+	llm LLMClient,
+	memory MemoryStore,
+	audit AuditLogger,
+	logger *slog.Logger,
+	tools ...Tool,
+) *Agent {
+	toolMap := make(map[string]Tool, len(tools))
+	for _, t := range tools {
+		toolMap[t.Name()] = t
+	}
+	return &Agent{
+		cfg:    cfg,
+		llm:    llm,
+		memory: memory,
+		tools:  toolMap,
+		audit:  audit,
+		logger: logger,
+	}
+}
+
+// TurnInput is everything the agent needs to process one user turn.
+type TurnInput struct {
+	SessionID string
+	History   []Message   // conversation history (caller manages this)
+	UserMsg   Message     // the new incoming message
+}
+
+// TurnOutput is the agent's response for one turn.
+type TurnOutput struct {
+	Reply        string
+	Files        []OutputFile  // any files to send back
+	TokensUsed   int
+	ToolsInvoked []string
+}
+
+// OutputFile is a file the agent wants to send to the user.
+type OutputFile struct {
+	Name string
+	Data []byte
+}
+
+// Run executes one full agent turn: load memory → build context → LLM loop → respond.
+// It is safe to call concurrently from multiple goroutines (e.g. workflow workers).
+func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
+	start := time.Now()
+	a.logger.Info("agent turn start",
+		"session", input.SessionID,
+		"model", a.llm.ModelName(),
+	)
+
+	// 1. Load relevant memories for this message.
+	facts, err := a.memory.Search(ctx, input.UserMsg.Content, a.cfg.MemorySearchLimit)
+	if err != nil {
+		// Memory failure is non-fatal — log and continue without it.
+		a.logger.Warn("memory search failed", "err", err)
+		facts = nil
+	}
+
+	// 2. Build the context window for this turn.
+	messages := a.buildContext(input, facts)
+
+	// 3. Collect tool definitions to expose to the model.
+	toolDefs := make([]ToolDefinition, 0, len(a.tools))
+	for _, t := range a.tools {
+		toolDefs = append(toolDefs, t.Definition())
+	}
+
+	// 4. LLM agentic loop — runs until the model stops requesting tools
+	//    or MaxToolRounds is hit.
+	output := &TurnOutput{}
+	invokedTools := map[string]struct{}{}
+
+	for round := 0; round < a.cfg.MaxToolRounds; round++ {
+		callStart := time.Now()
+		result, err := a.llm.Complete(ctx, messages, toolDefs)
+		if err != nil {
+			return nil, fmt.Errorf("agent.Run llm.Complete round=%d: %w", round, err)
+		}
+
+		a.audit.LogModelCall(ctx, input.SessionID, a.llm.ModelName(),
+			result.InputTokens, result.OutputTokens,
+			time.Since(callStart).Milliseconds())
+
+		output.TokensUsed += result.InputTokens + result.OutputTokens
+
+		// Append assistant message to running context.
+		messages = append(messages, Message{
+			Role:    RoleAssistant,
+			Content: result.Content,
+		})
+
+		// If no tool calls, the model is done.
+		if len(result.ToolCalls) == 0 {
+			output.Reply = result.Content
+			break
+		}
+
+		// 5. Execute each requested tool and append results.
+		toolResults, files, err := a.executeTools(ctx, input.SessionID, result.ToolCalls, invokedTools)
+		if err != nil {
+			return nil, fmt.Errorf("agent.Run executeTools round=%d: %w", round, err)
+		}
+		output.Files = append(output.Files, files...)
+
+		// Append tool results as a tool-role message.
+		for _, tr := range toolResults {
+			messages = append(messages, Message{
+				Role:    RoleTool,
+				Content: tr.Content,
+			})
+		}
+	}
+
+	// 6. Track which tools were used.
+	for name := range invokedTools {
+		output.ToolsInvoked = append(output.ToolsInvoked, name)
+	}
+
+	a.logger.Info("agent turn complete",
+		"session", input.SessionID,
+		"tokens", output.TokensUsed,
+		"tools", output.ToolsInvoked,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+
+	return output, nil
+}
+
+// buildContext assembles the message slice for the LLM call.
+// System prompt + memory injection + conversation history + new user message.
+func (a *Agent) buildContext(input TurnInput, facts []Fact) []Message {
+	messages := make([]Message, 0, len(input.History)+3)
+
+	// System prompt.
+	messages = append(messages, Message{
+		Role:    RoleSystem,
+		Content: a.buildSystemPrompt(facts),
+	})
+
+	// Conversation history (caller is responsible for trimming if needed).
+	messages = append(messages, input.History...)
+
+	// New user message.
+	messages = append(messages, input.UserMsg)
+
+	return messages
+}
+
+// buildSystemPrompt constructs the system prompt, injecting relevant memories.
+func (a *Agent) buildSystemPrompt(facts []Fact) string {
+	base := a.cfg.SystemPrompt
+	if len(facts) == 0 {
+		return base
+	}
+
+	memSection := "\n\n## Relevant Memory\n"
+	for _, f := range facts {
+		memSection += fmt.Sprintf("- %s\n", f.Content)
+	}
+	return base + memSection
+}
+
+// executeTools runs each tool call, returning results and any output files.
+func (a *Agent) executeTools(
+	ctx context.Context,
+	sessionID string,
+	calls []ToolCall,
+	invoked map[string]struct{},
+) ([]ToolResult, []OutputFile, error) {
+	results := make([]ToolResult, 0, len(calls))
+	var files []OutputFile
+
+	for _, call := range calls {
+		tool, ok := a.tools[call.Name]
+		if !ok {
+			results = append(results, ToolResult{
+				ToolCallID: call.ID,
+				Content:    fmt.Sprintf("error: unknown tool %q", call.Name),
+				IsError:    true,
+			})
+			continue
+		}
+
+		invoked[call.Name] = struct{}{}
+		execStart := time.Now()
+
+		result, err := tool.Execute(ctx, call.Input)
+		durationMs := time.Since(execStart).Milliseconds()
+
+		if err != nil {
+			result = &ToolResult{
+				ToolCallID: call.ID,
+				Content:    fmt.Sprintf("error executing %s: %v", call.Name, err),
+				IsError:    true,
+			}
+		}
+
+		a.audit.LogToolCall(ctx, sessionID, call.Name, call.Input, result, durationMs)
+		results = append(results, *result)
+	}
+
+	return results, files, nil
+}
