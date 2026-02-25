@@ -136,11 +136,13 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 
 		output.TokensUsed += result.InputTokens + result.OutputTokens
 
-		// Append assistant message to running context.
-		messages = append(messages, Message{
-			Role:    RoleAssistant,
-			Content: result.Content,
-		})
+		// Append assistant message to running context (including any tool calls).
+		assistantMsg := Message{
+			Role:      RoleAssistant,
+			Content:   result.Content,
+			ToolCalls: result.ToolCalls,
+		}
+		messages = append(messages, assistantMsg)
 
 		// If no tool calls, the model is done.
 		if len(result.ToolCalls) == 0 {
@@ -155,11 +157,13 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		}
 		output.Files = append(output.Files, files...)
 
-		// Append tool results as a tool-role message.
+		// Append tool results as tool-role messages with their tool call IDs.
 		for _, tr := range toolResults {
 			messages = append(messages, Message{
-				Role:    RoleTool,
-				Content: tr.Content,
+				Role:       RoleTool,
+				Content:    tr.Content,
+				ToolCallID: tr.ToolCallID,
+				IsError:    tr.IsError,
 			})
 		}
 	}
@@ -247,6 +251,9 @@ func (a *Agent) executeTools(
 				IsError:    true,
 			}
 		}
+
+		// Ensure ToolCallID is always set (tools don't know their call ID).
+		result.ToolCallID = call.ID
 
 		a.audit.LogToolCall(ctx, sessionID, call.Name, call.Input, result, durationMs)
 		results = append(results, *result)

@@ -12,12 +12,15 @@ import (
 
 // Message represents a single message in a conversation.
 type Message struct {
-	ID        string
-	SessionID string
-	Role      Role
-	Content   string
-	Images    []ImageAttachment
-	CreatedAt time.Time
+	ID         string
+	SessionID  string
+	Role       Role
+	Content    string
+	Images     []ImageAttachment
+	ToolCalls  []ToolCall // populated on assistant messages that request tool use
+	ToolCallID string     // populated on tool-result messages (links to ToolCall.ID)
+	IsError    bool       // true if this tool result represents an error
+	CreatedAt  time.Time
 }
 
 // Role distinguishes user, assistant, and system messages.
