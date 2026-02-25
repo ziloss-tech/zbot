@@ -4,6 +4,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -23,6 +24,9 @@ const (
 	ModelHaiku  = "claude-haiku-4-5-20251001"
 
 	DefaultMaxTokens = 8192
+
+	// MaxImagesPerRequest is Claude's limit for image content blocks.
+	MaxImagesPerRequest = 20
 )
 
 // ─── CLIENT ─────────────────────────────────────────────────────────────────
@@ -49,7 +53,7 @@ func New(apiKey string, logger *slog.Logger) *Client {
 func (c *Client) ModelName() string { return c.model }
 
 // Complete sends messages to Claude and returns the response.
-// Handles system prompt extraction, tool definitions, and tool_use parsing.
+// Handles system prompt extraction, tool definitions, multimodal images, and tool_use parsing.
 func (c *Client) Complete(ctx context.Context, messages []agent.Message, tools []agent.ToolDefinition) (*agent.CompletionResult, error) {
 
 	// 1. Separate system prompt from conversation messages.
@@ -64,16 +68,13 @@ func (c *Client) Complete(ctx context.Context, messages []agent.Message, tools [
 			})
 
 		case agent.RoleUser:
-			sdkMessages = append(sdkMessages, anthropic.NewUserMessage(
-				anthropic.NewTextBlock(msg.Content),
-			))
+			sdkMessages = append(sdkMessages, buildUserParam(msg))
 
 		case agent.RoleAssistant:
 			sdkMessages = append(sdkMessages, buildAssistantParam(msg))
 
 		case agent.RoleTool:
 			// Tool results must be grouped into user messages.
-			// Consecutive tool results get merged by mergeToolResults below.
 			sdkMessages = append(sdkMessages, anthropic.NewUserMessage(
 				anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, msg.IsError),
 			))
@@ -230,6 +231,63 @@ func isSimpleMessage(text string) bool {
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
+// mediaTypeToSDK maps MIME types to Anthropic SDK media type constants.
+func mediaTypeToSDK(mediaType string) anthropic.Base64ImageSourceMediaType {
+	switch mediaType {
+	case "image/jpeg":
+		return anthropic.Base64ImageSourceMediaTypeImageJPEG
+	case "image/png":
+		return anthropic.Base64ImageSourceMediaTypeImagePNG
+	case "image/gif":
+		return anthropic.Base64ImageSourceMediaTypeImageGIF
+	case "image/webp":
+		return anthropic.Base64ImageSourceMediaTypeImageWebP
+	default:
+		return anthropic.Base64ImageSourceMediaTypeImageJPEG
+	}
+}
+
+// buildUserParam converts an agent.Message (role=user) into an Anthropic SDK
+// MessageParam, including image attachments as content blocks.
+func buildUserParam(msg agent.Message) anthropic.MessageParam {
+	var blocks []anthropic.ContentBlockParamUnion
+
+	// Add image content blocks BEFORE text (Claude processes them in order).
+	// Enforce MaxImagesPerRequest limit.
+	imageCount := len(msg.Images)
+	if imageCount > MaxImagesPerRequest {
+		imageCount = MaxImagesPerRequest
+	}
+	for i := 0; i < imageCount; i++ {
+		img := msg.Images[i]
+		blocks = append(blocks, anthropic.ContentBlockParamUnion{
+			OfImage: &anthropic.ImageBlockParam{
+				Source: anthropic.ImageBlockParamSourceUnion{
+					OfBase64: &anthropic.Base64ImageSourceParam{
+						MediaType: mediaTypeToSDK(img.MediaType),
+						Data:      base64.StdEncoding.EncodeToString(img.Data),
+					},
+				},
+			},
+		})
+	}
+
+	// Add text content block.
+	if msg.Content != "" {
+		blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+	}
+
+	// Fallback: if no blocks at all, add empty text.
+	if len(blocks) == 0 {
+		blocks = append(blocks, anthropic.NewTextBlock(""))
+	}
+
+	return anthropic.MessageParam{
+		Role:    anthropic.MessageParamRoleUser,
+		Content: blocks,
+	}
+}
+
 // buildAssistantParam converts an agent.Message (role=assistant) into an
 // Anthropic SDK MessageParam, preserving both text and tool_use blocks.
 func buildAssistantParam(msg agent.Message) anthropic.MessageParam {
@@ -304,8 +362,6 @@ func isToolResultMessage(msg anthropic.MessageParam) bool {
 }
 
 // convertInputSchema converts our map[string]any JSON schema into the SDK's ToolInputSchemaParam.
-// Our tools define schemas like {"type":"object","properties":{...},"required":[...]}.
-// The SDK wants these broken out into the ToolInputSchemaParam struct.
 func convertInputSchema(schema map[string]any) anthropic.ToolInputSchemaParam {
 	result := anthropic.ToolInputSchemaParam{}
 	if props, ok := schema["properties"].(map[string]any); ok {

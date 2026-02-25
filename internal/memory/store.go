@@ -1,6 +1,6 @@
 // Package memory implements the hybrid pgvector + BM25 memory store.
 // Reuses the existing Vertex AI / GCP Cloud SQL pgvector infrastructure at Ziloss.
-// Same database as mem0, separate table namespace: zbot_memories.
+// Same database as mem0, separate table namespace: e.g. "zbot" → "zbot_memories".
 package memory
 
 import (
@@ -33,13 +33,22 @@ type Embedder interface {
 	Dims() int
 }
 
+// tableName returns the fully-qualified memories table name for this namespace.
+func (s *Store) tableName() string {
+	return s.namespace + "_memories"
+}
+
 // New creates a Store. Runs migrations on startup to ensure schema exists.
-func New(ctx context.Context, db *pgxpool.Pool, embedder Embedder, logger *slog.Logger) (*Store, error) {
+// namespace controls the table name: e.g. "zbot" → "zbot_memories".
+func New(ctx context.Context, db *pgxpool.Pool, embedder Embedder, logger *slog.Logger, namespace string) (*Store, error) {
+	if namespace == "" {
+		namespace = "zbot"
+	}
 	s := &Store{
 		db:        db,
 		embedder:  embedder,
 		logger:    logger,
-		namespace: "zbot",
+		namespace: namespace,
 	}
 	if err := s.migrate(ctx); err != nil {
 		return nil, fmt.Errorf("memory.New migrate: %w", err)
@@ -55,14 +64,16 @@ func (s *Store) Save(ctx context.Context, fact agent.Fact) error {
 		return fmt.Errorf("memory.Save Embed: %w", err)
 	}
 
-	_, err = s.db.Exec(ctx, `
-		INSERT INTO zbot_memories (id, content, source, tags, embedding, created_at)
+	query := fmt.Sprintf(`
+		INSERT INTO %s (id, content, source, tags, embedding, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (id) DO UPDATE
 		  SET content = EXCLUDED.content,
 		      embedding = EXCLUDED.embedding,
 		      updated_at = NOW()
-	`,
+	`, s.tableName())
+
+	_, err = s.db.Exec(ctx, query,
 		fact.ID, fact.Content, fact.Source, fact.Tags, embedding, fact.CreatedAt,
 	)
 	if err != nil {
@@ -87,18 +98,19 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]agent.Fa
 		return nil, fmt.Errorf("memory.Search Embed: %w", err)
 	}
 
-	rows, err := s.db.Query(ctx, `
+	tbl := s.tableName()
+	sqlQuery := fmt.Sprintf(`
 		WITH vector_results AS (
 			SELECT id, content, source, tags, created_at,
 			       1 - (embedding <=> $1::vector) AS vector_score
-			FROM zbot_memories
+			FROM %s
 			ORDER BY embedding <=> $1::vector
 			LIMIT 20
 		),
 		bm25_results AS (
 			SELECT id, content, source, tags, created_at,
 			       ts_rank(to_tsvector('english', content), plainto_tsquery('english', $2)) AS bm25_score
-			FROM zbot_memories
+			FROM %s
 			WHERE to_tsvector('english', content) @@ plainto_tsquery('english', $2)
 			LIMIT 20
 		),
@@ -119,7 +131,9 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]agent.Fa
 		FROM fused
 		ORDER BY final_score DESC
 		LIMIT $3
-	`, embedding, query, limit)
+	`, tbl, tbl)
+
+	rows, err := s.db.Query(ctx, sqlQuery, embedding, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("memory.Search query: %w", err)
 	}
@@ -140,40 +154,100 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]agent.Fa
 
 // Delete removes a memory by ID.
 func (s *Store) Delete(ctx context.Context, id string) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM zbot_memories WHERE id = $1`, id)
+	query := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.tableName())
+	_, err := s.db.Exec(ctx, query, id)
 	return err
 }
 
-// migrate ensures the zbot_memories table exists with correct schema.
+// Count returns the total number of memories in the store.
+func (s *Store) Count(ctx context.Context) (int64, error) {
+	var count int64
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s`, s.tableName())
+	err := s.db.QueryRow(ctx, query).Scan(&count)
+	return count, err
+}
+
+// Stats returns aggregate statistics about the memory store.
+type MemoryStats struct {
+	Total   int64
+	Oldest  time.Time
+	Newest  time.Time
+}
+
+func (s *Store) Stats(ctx context.Context) (*MemoryStats, error) {
+	stats := &MemoryStats{}
+	query := fmt.Sprintf(`
+		SELECT COUNT(*), COALESCE(MIN(created_at), NOW()), COALESCE(MAX(created_at), NOW())
+		FROM %s
+	`, s.tableName())
+	err := s.db.QueryRow(ctx, query).Scan(&stats.Total, &stats.Oldest, &stats.Newest)
+	if err != nil {
+		return nil, fmt.Errorf("memory.Stats: %w", err)
+	}
+	return stats, nil
+}
+
+// List returns the most recent N memories.
+func (s *Store) List(ctx context.Context, limit int) ([]agent.Fact, error) {
+	query := fmt.Sprintf(`
+		SELECT id, content, source, tags, created_at
+		FROM %s
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, s.tableName())
+
+	rows, err := s.db.Query(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("memory.List: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []agent.Fact
+	for rows.Next() {
+		var f agent.Fact
+		var tags []string
+		if err := rows.Scan(&f.ID, &f.Content, &f.Source, &tags, &f.CreatedAt); err != nil {
+			return nil, fmt.Errorf("memory.List scan: %w", err)
+		}
+		f.Tags = tags
+		facts = append(facts, f)
+	}
+	return facts, rows.Err()
+}
+
+// migrate ensures the memories table exists with correct schema.
 // Idempotent — safe to run on every startup.
 func (s *Store) migrate(ctx context.Context) error {
-	_, err := s.db.Exec(ctx, `
+	tbl := s.tableName()
+	migration := fmt.Sprintf(`
 		CREATE EXTENSION IF NOT EXISTS vector;
 
-		CREATE TABLE IF NOT EXISTS zbot_memories (
+		CREATE TABLE IF NOT EXISTS %s (
 			id         TEXT PRIMARY KEY,
 			content    TEXT NOT NULL,
 			source     TEXT NOT NULL DEFAULT 'conversation',
 			tags       TEXT[] NOT NULL DEFAULT '{}',
-			embedding  vector(768),  -- Vertex AI text-embedding-004 dims
+			embedding  vector(768),
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 
-		CREATE INDEX IF NOT EXISTS zbot_memories_embedding_idx
-			ON zbot_memories USING hnsw (embedding vector_cosine_ops)
+		CREATE INDEX IF NOT EXISTS %s_embedding_idx
+			ON %s USING hnsw (embedding vector_cosine_ops)
 			WITH (m = 16, ef_construction = 64);
 
-		CREATE INDEX IF NOT EXISTS zbot_memories_fts_idx
-			ON zbot_memories USING gin (to_tsvector('english', content));
+		CREATE INDEX IF NOT EXISTS %s_fts_idx
+			ON %s USING gin (to_tsvector('english', content));
 
-		CREATE INDEX IF NOT EXISTS zbot_memories_created_idx
-			ON zbot_memories (created_at DESC);
-	`)
+		CREATE INDEX IF NOT EXISTS %s_created_idx
+			ON %s (created_at DESC);
+	`, tbl, tbl, tbl, tbl, tbl, tbl, tbl)
+
+	_, err := s.db.Exec(ctx, migration)
 	if err != nil {
 		return fmt.Errorf("memory migrate: %w", err)
 	}
-	s.logger.Info("memory schema ready", "table", "zbot_memories")
+	s.logger.Info("memory schema ready", "table", tbl)
 	return nil
 }
 

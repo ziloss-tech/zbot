@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/jeremylerwick-max/zbot/internal/scraper"
 )
 
 // ─── WEB SEARCH ──────────────────────────────────────────────────────────────
@@ -124,17 +127,36 @@ type braveSearchResult struct {
 	} `json:"web"`
 }
 
-// ─── URL FETCH ────────────────────────────────────────────────────────────────
+// ─── URL FETCH (UPGRADED WITH FULL SCRAPER STACK) ─────────────────────────
 
 // FetchURLTool fetches and extracts text content from a URL.
-// Tier 3 in the research stack — for specific URLs the model wants to read.
+// Uses the full anti-block scraper stack: blocklist → cache → rate limit →
+// proxy + user agent rotation → retry → JS fallback → text extraction.
 type FetchURLTool struct {
-	httpClient *http.Client
+	proxyPool   *scraper.ProxyPool
+	rateLimiter *scraper.DomainRateLimiter
+	cache       *scraper.ScrapeCache
+	browser     *scraper.BrowserFetcher
 }
 
+// NewFetchURLTool creates a basic FetchURLTool without the scraper stack.
+// Used for backward compatibility. Call NewFetchURLToolFull for the full stack.
 func NewFetchURLTool() *FetchURLTool {
+	return &FetchURLTool{}
+}
+
+// NewFetchURLToolFull creates a FetchURLTool with the full scraper stack.
+func NewFetchURLToolFull(
+	proxyPool *scraper.ProxyPool,
+	rateLimiter *scraper.DomainRateLimiter,
+	cache *scraper.ScrapeCache,
+	browser *scraper.BrowserFetcher,
+) *FetchURLTool {
 	return &FetchURLTool{
-		httpClient: &http.Client{Timeout: 20 * time.Second},
+		proxyPool:   proxyPool,
+		rateLimiter: rateLimiter,
+		cache:       cache,
+		browser:     browser,
 	}
 }
 
@@ -143,7 +165,7 @@ func (t *FetchURLTool) Name() string { return "fetch_url" }
 func (t *FetchURLTool) Definition() agent.ToolDefinition {
 	return agent.ToolDefinition{
 		Name:        "fetch_url",
-		Description: "Fetch and read the text content of a specific URL. Use for reading articles, docs, or any web page.",
+		Description: "Fetch and read the text content of a specific URL. Use for reading articles, docs, or any web page. Handles JavaScript-heavy sites automatically.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -158,60 +180,137 @@ func (t *FetchURLTool) Definition() agent.ToolDefinition {
 }
 
 func (t *FetchURLTool) Execute(ctx context.Context, input map[string]any) (*agent.ToolResult, error) {
-	url, _ := input["url"].(string)
-	if url == "" {
+	rawURL, _ := input["url"].(string)
+	if rawURL == "" {
 		return &agent.ToolResult{Content: "error: url is required", IsError: true}, nil
 	}
 
-	// Basic URL validation — block localhost/private IPs (SSRF prevention).
-	if isBlockedURL(url) {
+	// 1. Check blocklist — reject if blocked.
+	if scraper.IsBlocked(rawURL) {
 		return &agent.ToolResult{
-			Content: fmt.Sprintf("error: URL %q is blocked (private network or disallowed)", url),
+			Content: fmt.Sprintf("error: URL %q is blocked (private network or disallowed domain)", rawURL),
 			IsError: true,
 		}, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("fetch_url: build request: %w", err)
+	// 2. Check cache — return cached content if fresh.
+	if t.cache != nil {
+		if content, found := t.cache.Get(rawURL); found {
+			return &agent.ToolResult{Content: content + "\n\n_[cached]_"}, nil
+		}
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; ZBOTBot/1.0)")
 
-	resp, err := t.httpClient.Do(req)
+	// 3. Extract domain for rate limiting.
+	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("fetch_url: request: %w", err)
+		return &agent.ToolResult{Content: fmt.Sprintf("error: invalid URL: %v", err), IsError: true}, nil
 	}
-	defer resp.Body.Close()
+	domain := parsedURL.Hostname()
 
-	if resp.StatusCode != http.StatusOK {
+	// 4. Apply domain rate limiter — wait if needed.
+	if t.rateLimiter != nil {
+		if err := t.rateLimiter.Wait(ctx, domain); err != nil {
+			return &agent.ToolResult{Content: fmt.Sprintf("error: rate limit wait cancelled: %v", err), IsError: true}, nil
+		}
+	}
+
+	// 5. Try simple HTTP fetch with random user agent + proxy rotation + retry.
+	var htmlContent string
+	fetchErr := error(nil)
+
+	resp, err := scraper.Retry(ctx, 3, func() (*http.Response, error) {
+		var client *http.Client
+		if t.proxyPool != nil {
+			client = t.proxyPool.NewHTTPClient(20 * time.Second)
+		} else {
+			client = &http.Client{Timeout: 20 * time.Second}
+		}
+
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if reqErr != nil {
+			return nil, reqErr
+		}
+		req.Header.Set("User-Agent", scraper.RandomUserAgent())
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+
+		return client.Do(req)
+	})
+
+	if err != nil {
+		fetchErr = err
+	} else {
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			fetchErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+		} else {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
+			if readErr != nil {
+				fetchErr = readErr
+			} else {
+				htmlContent = string(body)
+			}
+		}
+	}
+
+	// 6. Check if we got usable content — if empty/minimal, try headless browser.
+	if fetchErr != nil || isJSPlaceholder(htmlContent) {
+		if t.browser != nil && t.browser.Available() {
+			browserHTML, browserErr := t.browser.Fetch(ctx, rawURL)
+			if browserErr == nil && len(browserHTML) > len(htmlContent) {
+				htmlContent = browserHTML
+				fetchErr = nil
+			}
+		}
+	}
+
+	// If still no content, return the error.
+	if fetchErr != nil && htmlContent == "" {
 		return &agent.ToolResult{
-			Content: fmt.Sprintf("fetch error: HTTP %d for %s", resp.StatusCode, url),
+			Content: fmt.Sprintf("fetch error for %s: %v", rawURL, fetchErr),
 			IsError: true,
 		}, nil
 	}
 
-	// Read up to 512KB — enough for any article, not enough to OOM on large files.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
-	if err != nil {
-		return nil, fmt.Errorf("fetch_url: read body: %w", err)
+	// 7. Extract clean text from HTML.
+	cleanText := scraper.ExtractText(htmlContent)
+
+	// Truncate if too long for the model context.
+	if len(cleanText) > 100*1024 {
+		cleanText = cleanText[:100*1024] + "\n[TRUNCATED — content exceeds 100KB]"
 	}
 
-	// TODO Phase 3: Strip HTML tags, extract main content.
-	// For now, return raw (model handles HTML ok for text extraction).
-	return &agent.ToolResult{Content: string(body)}, nil
+	if cleanText == "" {
+		return &agent.ToolResult{Content: "No readable content extracted from the page."}, nil
+	}
+
+	// 8. Cache the result.
+	if t.cache != nil {
+		_ = t.cache.Set(rawURL, cleanText)
+	}
+
+	return &agent.ToolResult{Content: cleanText}, nil
 }
 
-// isBlockedURL prevents SSRF by rejecting private/localhost URLs.
-func isBlockedURL(url string) bool {
-	blocked := []string{
-		"localhost", "127.0.0.1", "0.0.0.0",
-		"169.254.", "192.168.", "10.", "172.16.",
-		"::1", "[::1]",
+// isJSPlaceholder detects pages that are JS-rendered with no real content.
+func isJSPlaceholder(html string) bool {
+	if len(html) < 500 {
+		return true
 	}
-	for _, b := range blocked {
-		if len(url) > len(b) {
-			lower := toLower(url[7:]) // skip "http://"
-			if len(lower) >= len(b) && lower[:len(b)] == b {
+	lower := strings.ToLower(html)
+	placeholders := []string{
+		`<div id="root"></div>`,
+		`<div id="app"></div>`,
+		`<app-root>`,
+		`<div id="__next">`,
+		"loading...",
+		"please enable javascript",
+		"you need to enable javascript",
+	}
+	for _, p := range placeholders {
+		if strings.Contains(lower, p) {
+			textLen := len(scraper.ExtractText(html))
+			if textLen < 200 {
 				return true
 			}
 		}
@@ -219,18 +318,12 @@ func isBlockedURL(url string) bool {
 	return false
 }
 
-func toLower(s string) string {
-	b := []byte(s)
-	for i := range b {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 32
-		}
-	}
-	return string(b)
-}
+var _ agent.Tool = (*WebSearchTool)(nil)
+var _ agent.Tool = (*FetchURLTool)(nil)
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 func urlEncode(s string) string {
-	// Simple URL encoding — Phase 1 will use net/url.QueryEscape.
 	result := make([]byte, 0, len(s)*3)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
