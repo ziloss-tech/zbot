@@ -7,12 +7,22 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jeremylerwick-max/zbot/internal/agent"
 )
+
+// fmtVec formats a []float32 as a pgvector literal: "[0.1,0.2,...]"
+func fmtVec(v []float32) string {
+	parts := make([]string, len(v))
+	for i, f := range v {
+		parts[i] = fmt.Sprintf("%g", f)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
 
 // Store implements agent.MemoryStore using pgvector + PostgreSQL FTS.
 // Architecture:
@@ -74,7 +84,7 @@ func (s *Store) Save(ctx context.Context, fact agent.Fact) error {
 	`, s.tableName())
 
 	_, err = s.db.Exec(ctx, query,
-		fact.ID, fact.Content, fact.Source, fact.Tags, embedding, fact.CreatedAt,
+		fact.ID, fact.Content, fact.Source, fact.Tags, fmtVec(embedding), fact.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("memory.Save insert: %w", err)
@@ -133,7 +143,7 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]agent.Fa
 		LIMIT $3
 	`, tbl, tbl)
 
-	rows, err := s.db.Query(ctx, sqlQuery, embedding, query, limit)
+	rows, err := s.db.Query(ctx, sqlQuery, fmtVec(embedding), query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("memory.Search query: %w", err)
 	}
