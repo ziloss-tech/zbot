@@ -102,6 +102,23 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		return fmt.Errorf("get brave api key: %w", err)
 	}
 
+	// Slack allowlist — who can message ZBOT. Empty/PENDING = dev mode (all users allowed).
+	allowedUserID, _ := sm.Get(ctx, "zbot-allowed-user-id")
+	var allowedUsers []string
+	if allowedUserID != "" && allowedUserID != "PENDING" {
+		allowedUsers = []string{allowedUserID}
+		logger.Info("Slack allowlist active", "users", allowedUsers)
+	} else {
+		logger.Warn("Slack allowlist NOT set — all users can message ZBOT (dev mode)")
+	}
+
+	// DB password from Secret Manager.
+	dbPassword, dbPassErr := sm.Get(ctx, "zbot-db-password")
+	if dbPassErr != nil {
+		logger.Warn("zbot-db-password not in Secret Manager — using env fallback")
+		dbPassword = os.Getenv("ZBOT_DB_PASSWORD")
+	}
+
 	// ── Workspace ───────────────────────────────────────────────────────────
 	workspaceRoot := cfg.WorkspaceRoot
 	if workspaceRoot == "" {
@@ -113,7 +130,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	logger.Info("workspace ready", "path", workspaceRoot)
 
 	// ── Postgres ────────────────────────────────────────────────────────────
-	pgDB, pgErr := connectPostgres(ctx, logger)
+	pgDB, pgErr := connectPostgres(ctx, logger, dbPassword)
 	if pgErr != nil {
 		logger.Warn("postgres unavailable — some features disabled", "err", pgErr)
 	}
@@ -502,7 +519,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	slackGW := gateway.NewSlackGateway(
 		botToken,
 		appToken,
-		cfg.TelegramAllowFrom,
+		allowedUsers,
 		handler,
 		logger,
 	)
@@ -516,8 +533,8 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 }
 
 // connectPostgres connects to Cloud SQL pgvector instance.
-func connectPostgres(ctx context.Context, logger *slog.Logger) (*pgxpool.Pool, error) {
-	connStr := "postgresql://ziloss:ZilossMemory2024!@34.28.163.109:5432/ziloss_memory?sslmode=disable"
+func connectPostgres(ctx context.Context, logger *slog.Logger, password string) (*pgxpool.Pool, error) {
+	connStr := fmt.Sprintf("postgresql://ziloss:%s@34.28.163.109:5432/ziloss_memory?sslmode=disable", password)
 
 	poolCfg, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
