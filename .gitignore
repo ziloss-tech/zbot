@@ -2,7 +2,7 @@
 bin/
 *.exe
 *.out
-zbot
+/zbot
 
 # Go
 vendor/
