@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -21,6 +22,8 @@ import (
 	"github.com/jeremylerwick-max/zbot/internal/llm"
 	"github.com/jeremylerwick-max/zbot/internal/memory"
 	"github.com/jeremylerwick-max/zbot/internal/platform"
+	"github.com/jeremylerwick-max/zbot/internal/planner"
+	"github.com/jeremylerwick-max/zbot/internal/prompts"
 	"github.com/jeremylerwick-max/zbot/internal/scheduler"
 	"github.com/jeremylerwick-max/zbot/internal/scraper"
 	"github.com/jeremylerwick-max/zbot/internal/secrets"
@@ -28,6 +31,8 @@ import (
 	skillEmail "github.com/jeremylerwick-max/zbot/internal/skills/email"
 	skillGHL "github.com/jeremylerwick-max/zbot/internal/skills/ghl"
 	skillGitHub "github.com/jeremylerwick-max/zbot/internal/skills/github"
+	skillMemory "github.com/jeremylerwick-max/zbot/internal/skills/memory"
+	skillSearch "github.com/jeremylerwick-max/zbot/internal/skills/search"
 	skillSheets "github.com/jeremylerwick-max/zbot/internal/skills/sheets"
 	"github.com/jeremylerwick-max/zbot/internal/tools"
 	"github.com/jeremylerwick-max/zbot/internal/webui"
@@ -163,6 +168,19 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	llmClient := llm.New(anthropicKey, logger)
 	logger.Info("LLM client ready", "model", llmClient.ModelName())
 
+	// ── Planner + Critic (Sprint 10/11) — GPT-4o plans + reviews, Claude executes ─
+	var taskPlanner *planner.Planner
+	var taskCritic *planner.Critic
+	if openaiKey, openaiErr := sm.Get(ctx, "openai-api-key"); openaiErr == nil && openaiKey != "" {
+		openaiClient := llm.NewOpenAIClient(openaiKey, "gpt-4o", logger)
+		taskPlanner = planner.New(openaiClient, logger)
+		taskPlanner.SetMemoryStore(memStore) // Sprint 12: inject memory into planner context
+		taskCritic = planner.NewCritic(openaiClient, logger)
+		logger.Info("planner + critic ready", "model", "gpt-4o")
+	} else {
+		logger.Warn("OpenAI key not set — /plan command disabled")
+	}
+
 	// ── Scraper Stack (Sprint 4) ────────────────────────────────────────────
 	var proxyPool *scraper.ProxyPool
 	proxyList, proxyErr := sm.Get(ctx, "zbot-proxy-list")
@@ -212,8 +230,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		tools.NewReadFileTool(workspaceRoot),
 		tools.NewWriteFileTool(workspaceRoot),
 		tools.NewCodeRunnerTool(workspaceRoot),
-		tools.NewMemorySaveTool(memStore),
-		tools.NewSearchMemoryTool(memStore),
+		// Sprint 12: save_memory + search_memory moved to memory skill (below).
 		tools.NewAnalyzeImageTool(llmClient, workspaceRoot),
 		tools.NewPDFExtractTool(workspaceRoot),
 	}
@@ -221,8 +238,15 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// ── Skills System (Sprint 7) ────────────────────────────────────────────
 	skillRegistry := skills.NewRegistry()
 
-	// GHL skill.
-	if ghlKey, ghlErr := sm.Get(ctx, "ghl-api-key"); ghlErr == nil && ghlKey != "" {
+	// Memory skill — always registers (no secret required). Sprint 12.
+	skillRegistry.Register(skillMemory.NewSkill(memStore))
+	logger.Info("skill registered: memory")
+
+	// Search skill.
+	skillRegistry.Register(skillSearch.NewSkill())
+	logger.Info("skill registered: search")
+
+	if ghlKey, ghlErr := sm.Get(ctx, "ghl-api-token"); ghlErr == nil && ghlKey != "" {
 		skillRegistry.Register(skillGHL.NewSkill(ghlKey, "fRrP1e3LGLFewc5dQDhS"))
 		logger.Info("skill registered: ghl")
 	} else {
@@ -267,7 +291,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 
 	// ── Agent ───────────────────────────────────────────────────────────────
 	agentCfg := agent.DefaultConfig()
-	agentCfg.SystemPrompt = systemPrompt + skillRegistry.SystemPromptAddendum()
+	agentCfg.SystemPrompt = prompts.ClaudeExecutorSystem + skillRegistry.SystemPromptAddendum()
 
 	ag := agent.New(
 		agentCfg,
@@ -287,6 +311,11 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		} else {
 			dataStore := workflow.NewPGDataStore(pgDB)
 			orch = workflow.NewOrchestrator(wfStore, dataStore, ag, cfg.WorkerCount, logger)
+
+			// Sprint 12: Wire memory auto-save with Haiku for cheap insight extraction.
+			haikuClient := llm.NewHaikuClient(anthropicKey, logger)
+			orch.SetMemoryAutoSave(memStore, haikuClient)
+
 			go orch.Run(ctx)
 			logger.Info("workflow orchestrator started", "workers", cfg.WorkerCount)
 		}
@@ -362,6 +391,51 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 				return fmt.Sprintf("❌ Cancel failed: %v", err), nil
 			}
 			return fmt.Sprintf("🚫 Workflow `%s` — pending tasks canceled.", wfID), nil
+		}
+
+		// ── plan: <goal> — GPT-4o plans, Claude executes ─────────────────────
+		if strings.HasPrefix(trimmed, "plan: ") && taskPlanner != nil && orch != nil {
+			goal := strings.TrimSpace(strings.TrimPrefix(trimmed, "plan: "))
+			if goal == "" {
+				return "Usage: `/plan <goal>`\nExample: `/plan research top 5 GoHighLevel competitors and write a comparison report`", nil
+			}
+
+			logger.Info("plan requested", "goal", goal)
+
+			graph, planErr := taskPlanner.Plan(ctx, goal)
+			if planErr != nil {
+				return fmt.Sprintf("❌ Planning failed: %v", planErr), nil
+			}
+
+			wfID, submitErr := planner.Submit(ctx, orch.Store(), graph, sessionID)
+			if submitErr != nil {
+				return fmt.Sprintf("❌ Failed to submit plan: %v", submitErr), nil
+			}
+
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("🧠 *GPT-4o planned %d tasks for Claude to execute:*\n\n", len(graph.Tasks)))
+			for _, t := range graph.Tasks {
+				parallel := ""
+				if t.Parallel {
+					parallel = " _(parallel)_"
+				}
+				deps := ""
+				if len(t.DependsOn) > 0 {
+					deps = fmt.Sprintf(" _(after %v)_", t.DependsOn)
+				}
+				sb.WriteString(fmt.Sprintf("*%d. %s*%s%s\n_%s_\n\n", t.Priority, t.Title, parallel, deps, truncateStr(t.Instruction, 120)))
+			}
+			sb.WriteString(fmt.Sprintf("🚀 Workflow `%s` started — Claude is on it.\nTrack progress: `/status %s`", wfID, wfID))
+
+			return sb.String(), nil
+		}
+
+		// plan: without orchestrator
+		if strings.HasPrefix(trimmed, "plan: ") && (taskPlanner == nil || orch == nil) {
+			if taskPlanner == nil {
+				return "❌ Planner not available — add `openai-api-key` to Secret Manager.", nil
+			}
+			return "❌ Workflow engine not available — Postgres required.", nil
 		}
 
 		// ── /workflow <instruction> — submit a multi-step workflow ────────────
@@ -506,9 +580,164 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	go webhookGW.Start(ctx)
 	logger.Info("webhook gateway ready", "port", 18791)
 
-	// ── Web UI (Sprint 8) ───────────────────────────────────────────────────
+	// ── Haiku Client for cheap tasks (Sprint 12) ────────────────────────────
+	haikuForChat := llm.NewHaikuClient(anthropicKey, logger)
+
+	// ── Web UI (Sprint 8 + Sprint 11 Dual Brain Command Center) ─────────────
 	if pgDB != nil {
 		webServer := webui.New(pgDB, logger)
+
+		// Sprint 12: Wire memory store for memory panel API.
+		webServer.SetMemoryStore(memStore)
+
+		// Sprint 12: Wire memory-aware quick chat handler.
+		webServer.SetQuickChat(func(ctx context.Context, message string) (string, error) {
+			// 1. Search memory for context relevant to the message.
+			memContext := ""
+			if facts, memErr := memStore.Search(ctx, message, 5); memErr == nil && len(facts) > 0 {
+				memContext = "\n\n## What You Remember About Jeremy\n"
+				for _, f := range facts {
+					memContext += fmt.Sprintf("- %s\n", f.Content)
+				}
+				logger.Info("quick chat: injected memory context", "facts", len(facts))
+			}
+
+			// 2. Call Claude with memory-augmented system prompt.
+			chatSystemPrompt := systemPrompt + skillRegistry.SystemPromptAddendum() + memContext
+			chatMessages := []agent.Message{
+				{Role: agent.RoleSystem, Content: chatSystemPrompt},
+				{Role: agent.RoleUser, Content: message, CreatedAt: time.Now()},
+			}
+
+			result, err := llmClient.Complete(ctx, chatMessages, nil)
+			if err != nil {
+				return "", fmt.Errorf("quick chat llm: %w", err)
+			}
+
+			reply := result.Content
+
+			// 3. Check if response contains a saveable fact (via Haiku — cheap).
+			go func() {
+				factCheckPrompt := fmt.Sprintf(`User said: %q
+Assistant replied: %q
+
+Does this conversation contain a fact worth saving to long-term memory about the user or their business?
+If yes, respond with JSON: {"save": true, "fact": "the fact to save"}
+If no, respond with JSON: {"save": false}`, message, reply)
+
+				factCheckCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+
+				factResult, factErr := haikuForChat.Complete(factCheckCtx, []agent.Message{
+					{Role: agent.RoleUser, Content: factCheckPrompt},
+				}, nil)
+				if factErr != nil {
+					return
+				}
+
+				// Parse the fact check response.
+				var factCheck struct {
+					Save bool   `json:"save"`
+					Fact string `json:"fact"`
+				}
+				raw := factResult.Content
+				// Find JSON in response.
+				start := -1
+				end := -1
+				for i, c := range raw {
+					if c == '{' && start == -1 {
+						start = i
+					}
+					if c == '}' {
+						end = i + 1
+					}
+				}
+				if start >= 0 && end > start {
+					if jsonErr := json.Unmarshal([]byte(raw[start:end]), &factCheck); jsonErr == nil && factCheck.Save && factCheck.Fact != "" {
+						b := make([]byte, 8)
+						rand.Read(b)
+						fact := agent.Fact{
+							ID:        hex.EncodeToString(b),
+							Content:   factCheck.Fact,
+							Source:    "quick_chat",
+							Tags:      []string{"personal"},
+							CreatedAt: time.Now(),
+						}
+						if saveErr := memStore.Save(factCheckCtx, fact); saveErr == nil {
+							logger.Info("quick chat: auto-saved fact", "fact", factCheck.Fact)
+						}
+					}
+				}
+			}()
+
+			return reply, nil
+		})
+
+		// Sprint 11: Wire planner + orchestrator for dual-brain streaming.
+		if taskPlanner != nil {
+			webServer.SetPlanner(taskPlanner)
+		}
+		if orch != nil {
+			webServer.SetOrchestrator(orch)
+
+			// Hook orchestrator task events into the SSE hub.
+			hub := webServer.Hub()
+			orch.SetTaskEventHook(func(workflowID, taskID, eventType, payload string) {
+				hub.Publish(webui.Event{
+					WorkflowID: workflowID,
+					TaskID:     taskID,
+					Source:     "executor",
+					Type:       eventType,
+					Payload:    payload,
+				})
+			})
+
+			// Sprint 11: Wire GPT-4o critic loop into orchestrator.
+			if taskCritic != nil {
+				orch.SetCriticFunc(func(ctx context.Context, workflowID, taskID, instruction, output string) (string, string, bool, error) {
+					// Publish "reviewing" event to SSE.
+					hub.Publish(webui.Event{
+						WorkflowID: workflowID,
+						TaskID:     taskID,
+						Source:     "critic",
+						Type:       "reviewing",
+						Payload:    "",
+					})
+
+					verdict, err := taskCritic.Review(ctx, taskID, instruction, output)
+					if err != nil {
+						return "", "", false, err
+					}
+
+					verdictJSON, _ := json.Marshal(verdict)
+
+					// Publish verdict event to SSE.
+					hub.Publish(webui.Event{
+						WorkflowID: workflowID,
+						TaskID:     taskID,
+						Source:     "critic",
+						Type:       "verdict",
+						Payload:    string(verdictJSON),
+					})
+
+					shouldRetry := verdict.Verdict == "fail" && verdict.CorrectedInstruction != ""
+
+					if shouldRetry {
+						// Publish retrying event to SSE.
+						hub.Publish(webui.Event{
+							WorkflowID: workflowID,
+							TaskID:     taskID,
+							Source:     "critic",
+							Type:       "status",
+							Payload:    "retrying",
+						})
+					}
+
+					return string(verdictJSON), verdict.CorrectedInstruction, shouldRetry, nil
+				})
+			}
+		}
+
 		go webServer.Start(ctx)
 		logger.Info("web UI available", "url", "http://localhost:18790")
 	} else {

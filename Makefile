@@ -1,4 +1,4 @@
-.PHONY: build run test lint vuln clean tidy
+.PHONY: build run test lint vuln clean tidy ui ui-build dev
 
 # ── Build ──────────────────────────────────────────────────────────────────────
 build:
@@ -7,6 +7,16 @@ build:
 # ── Run (development) ──────────────────────────────────────────────────────────
 run:
 	go run ./cmd/zbot --env=development
+
+# ── Sprint 11: Dual Brain Command Center UI ──────────────────────────────────
+ui:
+	cd internal/webui/frontend && npm run dev
+
+ui-build:
+	bash scripts/build-ui.sh
+
+dev:
+	ZBOT_ENV=development GCP_PROJECT=ziloss go run ./cmd/zbot/
 
 # ── Test ───────────────────────────────────────────────────────────────────────
 test:

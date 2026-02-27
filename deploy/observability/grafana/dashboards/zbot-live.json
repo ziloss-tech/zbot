@@ -1,0 +1,59 @@
+{
+  "title": "ZBOT — Live Activity",
+  "uid": "zbot-live",
+  "tags": ["zbot"],
+  "refresh": "5s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Live Log Stream",
+      "type": "logs",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "uid": "loki" },
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "expr": "{app=\"zbot\"} | json | line_format \"[{{.level}}] {{.component}} — {{.msg}}\"",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Errors (last hour)",
+      "type": "logs",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "uid": "loki" },
+      "options": { "enableLogDetails": true, "showTime": true },
+      "targets": [
+        {
+          "expr": "{app=\"zbot\", level=\"error\"} | json",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Task Completions (last hour)",
+      "type": "logs",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "uid": "loki" },
+      "options": { "enableLogDetails": true, "showTime": true },
+      "targets": [
+        {
+          "expr": "{app=\"zbot\"} | json | msg=`task complete`",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39
+}

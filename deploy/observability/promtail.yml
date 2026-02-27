@@ -1,0 +1,71 @@
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # --- Option A (default): read from a log file ---
+  # Start ZBOT with: ./zbot 2>&1 | tee /tmp/zbot.log
+  # Then uncomment the volume mount in docker-compose.yml and this block:
+  #
+  # - job_name: zbot_file
+  #   static_configs:
+  #     - targets: [localhost]
+  #       labels:
+  #         job: zbot
+  #         app: zbot
+  #         env: local
+  #         __path__: /var/log/zbot.log
+  #   pipeline_stages:
+  #     - json:
+  #         expressions:
+  #           level: level
+  #           msg: msg
+  #           component: component
+  #           session_id: session
+  #           workflow_id: workflow_id
+  #           task_id: task_id
+  #     - labels:
+  #         level:
+  #         component:
+
+  # --- Option B (Docker): read from Docker container stdout ---
+  # Use this when ZBOT itself runs in Docker.
+  - job_name: zbot_docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: name
+            values: [zbot]
+    relabel_configs:
+      - source_labels: [__meta_docker_container_name]
+        target_label: container
+      - source_labels: [__meta_docker_container_label_app]
+        target_label: app
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            msg: msg
+            component: component
+            session_id: session
+            workflow_id: workflow_id
+            task_id: task_id
+            model: model
+            tool: tool
+            cost_usd: cost_usd
+            duration_ms: duration_ms
+            error: error
+      - labels:
+          level:
+          component:
+      - match:
+          selector: '{level="error"}'
+          stages:
+            - labels:
+                error:

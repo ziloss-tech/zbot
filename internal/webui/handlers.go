@@ -88,12 +88,12 @@ func renderPage(w http.ResponseWriter, title, active, body string) {
 
 // ─── INDEX ───────────────────────────────────────────────────────────────────
 
+// handleIndex serves the React command center at the root path.
+// Non-root unknown paths get 404.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	http.Redirect(w, r, "/conversations", http.StatusFound)
+	// Known old-dashboard paths remain handled by their own HandleFunc registrations.
+	// Unknown non-root paths → 404 (unless the React SPA handles them).
+	frontendHandler().ServeHTTP(w, r)
 }
 
 // ─── CONVERSATIONS ───────────────────────────────────────────────────────────

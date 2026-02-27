@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -47,9 +48,10 @@ type auditWrite struct {
 
 // PGAuditLogger implements agent.AuditLogger with async Postgres writes.
 type PGAuditLogger struct {
-	db     *pgxpool.Pool
-	writes chan auditWrite
-	logger *slog.Logger
+	db           *pgxpool.Pool
+	writes       chan auditWrite
+	logger       *slog.Logger
+	droppedTotal int64 // atomic counter for dropped audit events
 }
 
 // NewPGAuditLogger creates a Postgres-backed audit logger.
@@ -143,7 +145,8 @@ func (a *PGAuditLogger) LogToolCall(ctx context.Context, sessionID, toolName str
 		duration:  durationMs,
 	}:
 	default:
-		a.logger.Warn("audit channel full — dropping tool call log")
+		total := atomic.AddInt64(&a.droppedTotal, 1)
+		a.logger.Warn("audit event dropped", "component", "audit", "kind", "tool_call", "total_dropped", total)
 	}
 }
 
@@ -166,7 +169,8 @@ func (a *PGAuditLogger) LogModelCall(ctx context.Context, sessionID, model strin
 		duration:     durationMs,
 	}:
 	default:
-		a.logger.Warn("audit channel full — dropping model call log")
+		total := atomic.AddInt64(&a.droppedTotal, 1)
+		a.logger.Warn("audit event dropped", "component", "audit", "kind", "model_call", "total_dropped", total)
 	}
 }
 
@@ -186,7 +190,8 @@ func (a *PGAuditLogger) LogWorkflowEvent(ctx context.Context, workflowID, taskID
 		detail:     detail,
 	}:
 	default:
-		a.logger.Warn("audit channel full — dropping workflow event log")
+		total := atomic.AddInt64(&a.droppedTotal, 1)
+		a.logger.Warn("audit event dropped", "component", "audit", "kind", "workflow_event", "total_dropped", total)
 	}
 }
 

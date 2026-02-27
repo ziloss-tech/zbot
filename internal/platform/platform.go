@@ -20,6 +20,7 @@ import (
 
 // NewLogger creates a structured slog logger.
 // JSON in production, human-readable text in dev.
+// If ZBOT_LOG_DIR is set, also writes JSON logs to a file for Promtail/Loki ingestion.
 func NewLogger(env string) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
 	var h slog.Handler
@@ -28,7 +29,48 @@ func NewLogger(env string) *slog.Logger {
 	} else {
 		h = slog.NewTextHandler(os.Stdout, opts)
 	}
+
+	// If ZBOT_LOG_DIR is set, tee JSON logs to a file for Promtail to ship to Loki.
+	if logDir := os.Getenv("ZBOT_LOG_DIR"); logDir != "" {
+		logPath := logDir + "/zbot.log"
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			fileHandler := slog.NewJSONHandler(f, opts)
+			h = &multiHandler{primary: h, secondary: fileHandler}
+		}
+	}
+
 	return slog.New(h)
+}
+
+// multiHandler fans out log records to two handlers.
+type multiHandler struct {
+	primary   slog.Handler
+	secondary slog.Handler
+}
+
+func (m *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return m.primary.Enabled(ctx, level) || m.secondary.Enabled(ctx, level)
+}
+
+func (m *multiHandler) Handle(ctx context.Context, r slog.Record) error {
+	_ = m.primary.Handle(ctx, r)
+	_ = m.secondary.Handle(ctx, r)
+	return nil
+}
+
+func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &multiHandler{
+		primary:   m.primary.WithAttrs(attrs),
+		secondary: m.secondary.WithAttrs(attrs),
+	}
+}
+
+func (m *multiHandler) WithGroup(name string) slog.Handler {
+	return &multiHandler{
+		primary:   m.primary.WithGroup(name),
+		secondary: m.secondary.WithGroup(name),
+	}
 }
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────

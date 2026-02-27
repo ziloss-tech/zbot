@@ -50,6 +50,19 @@ func New(apiKey string, logger *slog.Logger) *Client {
 	}
 }
 
+// NewHaikuClient creates a cheap Anthropic client locked to Haiku.
+// Used for lightweight tasks like insight extraction and fact classification.
+func NewHaikuClient(apiKey string, logger *slog.Logger) *Client {
+	client := anthropic.NewClient(
+		option.WithAPIKey(apiKey),
+	)
+	return &Client{
+		sdk:    client,
+		model:  ModelHaiku,
+		logger: logger,
+	}
+}
+
 func (c *Client) ModelName() string { return c.model }
 
 // Complete sends messages to Claude and returns the response.

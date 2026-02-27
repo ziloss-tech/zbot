@@ -73,16 +73,21 @@ func New(
 
 // TurnInput is everything the agent needs to process one user turn.
 type TurnInput struct {
-	SessionID string
-	History   []Message   // conversation history (caller manages this)
-	UserMsg   Message     // the new incoming message
+	SessionID  string
+	WorkflowID string // set when this turn is part of a workflow task
+	TaskID     string // set when this turn is part of a workflow task
+	History    []Message // conversation history (caller manages this)
+	UserMsg    Message   // the new incoming message
 }
 
 // TurnOutput is the agent's response for one turn.
 type TurnOutput struct {
 	Reply        string
-	Files        []OutputFile  // any files to send back
-	TokensUsed   int
+	Files        []OutputFile // any files to send back
+	InputTokens  int
+	OutputTokens int
+	TokensUsed   int          // InputTokens + OutputTokens (kept for compatibility)
+	CostUSD      float64
 	ToolsInvoked []string
 }
 
@@ -96,10 +101,16 @@ type OutputFile struct {
 // It is safe to call concurrently from multiple goroutines (e.g. workflow workers).
 func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 	start := time.Now()
-	a.logger.Info("agent turn start",
+
+	logArgs := []any{
+		"component", "executor",
 		"session", input.SessionID,
 		"model", a.llm.ModelName(),
-	)
+	}
+	if input.WorkflowID != "" {
+		logArgs = append(logArgs, "workflow_id", input.WorkflowID, "task_id", input.TaskID)
+	}
+	a.logger.Info("agent turn start", logArgs...)
 
 	// 1. Load relevant memories for this message.
 	facts, err := a.memory.Search(ctx, input.UserMsg.Content, a.cfg.MemorySearchLimit)
@@ -134,6 +145,8 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 			result.InputTokens, result.OutputTokens,
 			time.Since(callStart).Milliseconds())
 
+		output.InputTokens += result.InputTokens
+		output.OutputTokens += result.OutputTokens
 		output.TokensUsed += result.InputTokens + result.OutputTokens
 
 		// Append assistant message to running context (including any tool calls).
@@ -173,12 +186,26 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		output.ToolsInvoked = append(output.ToolsInvoked, name)
 	}
 
-	a.logger.Info("agent turn complete",
+	// Calculate approximate cost (Claude Sonnet pricing).
+	const costPerInputToken = 0.000003  // $3 / million
+	const costPerOutputToken = 0.000015 // $15 / million
+	costUSD := float64(output.InputTokens)*costPerInputToken + float64(output.OutputTokens)*costPerOutputToken
+	output.CostUSD = costUSD
+
+	completeArgs := []any{
+		"component", "executor",
 		"session", input.SessionID,
-		"tokens", output.TokensUsed,
+		"model", a.llm.ModelName(),
+		"input_tokens", output.InputTokens,
+		"output_tokens", output.OutputTokens,
+		"cost_usd", fmt.Sprintf("%.4f", costUSD),
 		"tools", output.ToolsInvoked,
 		"duration_ms", time.Since(start).Milliseconds(),
-	)
+	}
+	if input.WorkflowID != "" {
+		completeArgs = append(completeArgs, "workflow_id", input.WorkflowID, "task_id", input.TaskID)
+	}
+	a.logger.Info("agent turn complete", completeArgs...)
 
 	return output, nil
 }

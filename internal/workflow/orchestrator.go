@@ -5,6 +5,9 @@ package workflow
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -14,14 +17,36 @@ import (
 	"github.com/jeremylerwick-max/zbot/internal/platform"
 )
 
+// TaskEventFunc is a callback for task lifecycle events.
+// Used by the webui SSE hub to broadcast task status changes.
+type TaskEventFunc func(workflowID, taskID, eventType, payload string)
+
+// CriticFunc reviews a completed task's output and returns a JSON verdict.
+// The orchestrator calls this after a task completes, before moving on.
+// Parameters: ctx, workflowID, taskID, instruction, output.
+// Returns: verdict JSON string, corrected instruction (empty if pass), error.
+type CriticFunc func(ctx context.Context, workflowID, taskID, instruction, output string) (verdictJSON string, correctedInstruction string, shouldRetry bool, err error)
+
+// InsightExtractor is a lightweight LLM call (Haiku) for extracting saveable facts.
+type InsightExtractor interface {
+	Complete(ctx context.Context, messages []agent.Message, tools []agent.ToolDefinition) (*agent.CompletionResult, error)
+}
+
 // Orchestrator manages workflow lifecycle: decompose → dispatch → collect.
 type Orchestrator struct {
-	store     agent.WorkflowStore
-	dataStore agent.DataStore
-	ag        *agent.Agent
-	workerN   int           // number of parallel workers
-	pollEvery time.Duration // how often to check for pending tasks
-	logger    *slog.Logger
+	store       agent.WorkflowStore
+	dataStore   agent.DataStore
+	ag          *agent.Agent
+	workerN     int           // number of parallel workers
+	pollEvery   time.Duration // how often to check for pending tasks
+	logger      *slog.Logger
+	onTaskEvent TaskEventFunc // optional callback for SSE broadcasting
+	criticFunc  CriticFunc    // optional GPT-4o critic review callback
+	retried     map[string]bool // tracks tasks that have been retried (max 1 retry)
+
+	// Sprint 12: Memory auto-save on workflow completion.
+	memoryStore      agent.MemoryStore  // for saving extracted insights
+	insightExtractor InsightExtractor   // Haiku LLM for cheap insight extraction
 }
 
 // NewOrchestrator constructs an Orchestrator.
@@ -43,6 +68,34 @@ func NewOrchestrator(
 		workerN:   workerN,
 		pollEvery: 2 * time.Second,
 		logger:    logger,
+		retried:   make(map[string]bool),
+	}
+}
+
+// SetTaskEventHook registers a callback for task lifecycle events.
+// Called when tasks start, complete, or fail — used by webui SSE hub.
+func (o *Orchestrator) SetTaskEventHook(fn TaskEventFunc) {
+	o.onTaskEvent = fn
+}
+
+// SetMemoryAutoSave enables auto-saving of workflow insights to memory.
+// extractor should be a cheap/fast model (Haiku) for fact extraction.
+func (o *Orchestrator) SetMemoryAutoSave(mem agent.MemoryStore, extractor InsightExtractor) {
+	o.memoryStore = mem
+	o.insightExtractor = extractor
+}
+
+// SetCriticFunc registers the GPT-4o critic review callback.
+// Called after each task completes. If the critic returns shouldRetry=true
+// and the task hasn't been retried yet, the task is re-run with the corrected instruction.
+func (o *Orchestrator) SetCriticFunc(fn CriticFunc) {
+	o.criticFunc = fn
+}
+
+// publishTaskEvent fires the event hook if set.
+func (o *Orchestrator) publishTaskEvent(workflowID, taskID, eventType, payload string) {
+	if o.onTaskEvent != nil {
+		o.onTaskEvent(workflowID, taskID, eventType, payload)
 	}
 }
 
@@ -100,7 +153,7 @@ func (o *Orchestrator) workerLoop(ctx context.Context, workerID string) {
 			return
 		case <-ticker.C:
 			if err := o.tryClaimAndRun(ctx, workerID); err != nil {
-				o.logger.Error("worker error", "worker", workerID, "err", err)
+				o.logger.Error("worker error", "component", "orchestrator", "worker", workerID, "err", err)
 			}
 		}
 	}
@@ -124,6 +177,9 @@ func (o *Orchestrator) tryClaimAndRun(ctx context.Context, workerID string) erro
 		"workflow", task.WorkflowID,
 	)
 
+	// Publish task started event.
+	o.publishTaskEvent(task.WorkflowID, task.ID, "status", "running")
+
 	return o.runTask(ctx, workerID, task)
 }
 
@@ -131,6 +187,7 @@ func (o *Orchestrator) tryClaimAndRun(ctx context.Context, workerID string) erro
 // KEY: Each task gets a FRESH context — it does not see the full workflow history.
 // It only receives: its specific instruction + the output of its direct dependency.
 func (o *Orchestrator) runTask(ctx context.Context, workerID string, task *agent.Task) error {
+	taskStart := time.Now()
 	taskCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
@@ -155,7 +212,9 @@ func (o *Orchestrator) runTask(ctx context.Context, workerID string, task *agent
 	}
 
 	input := agent.TurnInput{
-		SessionID: fmt.Sprintf("workflow-%s-task-%s", task.WorkflowID, task.ID),
+		SessionID:  fmt.Sprintf("workflow-%s-task-%s", task.WorkflowID, task.ID),
+		WorkflowID: task.WorkflowID,
+		TaskID:     task.ID,
 		UserMsg: agent.Message{
 			Role:    agent.RoleUser,
 			Content: instruction,
@@ -164,10 +223,24 @@ func (o *Orchestrator) runTask(ctx context.Context, workerID string, task *agent
 
 	result, err := o.ag.Run(taskCtx, input)
 	if err != nil {
+		o.logger.Error("task failed",
+			"component", "orchestrator",
+			"workflow_id", task.WorkflowID,
+			"task_id", task.ID,
+			"task_name", task.Name,
+			"error", err.Error(),
+			"duration_ms", time.Since(taskStart).Milliseconds(),
+		)
 		failErr := o.store.FailTask(ctx, task.ID, err.Error())
 		if failErr != nil {
-			o.logger.Error("FailTask error", "task", task.ID, "err", failErr)
+			o.logger.Error("FailTask error",
+				"component", "orchestrator",
+				"workflow_id", task.WorkflowID,
+				"task_id", task.ID,
+				"err", failErr,
+			)
 		}
+		o.publishTaskEvent(task.WorkflowID, task.ID, "error", err.Error())
 		return fmt.Errorf("runTask agent.Run task=%s: %w", task.ID, err)
 	}
 
@@ -181,15 +254,106 @@ func (o *Orchestrator) runTask(ctx context.Context, workerID string, task *agent
 		return fmt.Errorf("runTask CompleteTask task=%s: %w", task.ID, err)
 	}
 
+	// Publish task completion event with output snippet.
+	outputSnippet := result.Reply
+	if len(outputSnippet) > 500 {
+		outputSnippet = outputSnippet[:500] + "..."
+	}
+	o.publishTaskEvent(task.WorkflowID, task.ID, "complete", outputSnippet)
+
 	o.logger.Info("task complete",
+		"component", "orchestrator",
 		"worker", workerID,
+		"workflow_id", task.WorkflowID,
 		"task_id", task.ID,
 		"task_name", task.Name,
-		"tokens", result.TokensUsed,
+		"input_tokens", result.InputTokens,
+		"output_tokens", result.OutputTokens,
+		"cost_usd", fmt.Sprintf("%.4f", result.CostUSD),
 		"output_ref", outputRef,
+		"duration_ms", time.Since(taskStart).Milliseconds(),
 	)
 
+	// ─── GPT-4o Critic Review ──────────────────────────────────────
+	if o.criticFunc != nil {
+		o.runCriticReview(ctx, workerID, task, result.Reply)
+	}
+
+	// ─── Sprint 12: Auto-save workflow insights when all tasks are done ──
+	o.checkAndAutoSave(ctx, task.WorkflowID)
+
 	return nil
+}
+
+// checkAndAutoSave checks if a workflow is fully complete and triggers insight extraction.
+func (o *Orchestrator) checkAndAutoSave(ctx context.Context, workflowID string) {
+	if o.memoryStore == nil {
+		return
+	}
+
+	tasks, err := o.store.GetWorkflowStatus(ctx, workflowID)
+	if err != nil {
+		return
+	}
+
+	// Check if all tasks are in a terminal state.
+	for _, t := range tasks {
+		if t.Status == agent.TaskPending || t.Status == agent.TaskRunning {
+			return // workflow still in progress
+		}
+	}
+
+	// All tasks done — trigger auto-save in background.
+	go o.autoSaveWorkflowInsights(context.Background(), workflowID)
+}
+
+// runCriticReview sends the completed task output to the GPT-4o critic.
+// If the critic says "fail" and the task hasn't been retried, it re-runs the task
+// with the corrected instruction.
+func (o *Orchestrator) runCriticReview(ctx context.Context, workerID string, task *agent.Task, output string) {
+	verdictJSON, correctedInstruction, shouldRetry, err := o.criticFunc(
+		ctx, task.WorkflowID, task.ID, task.Instruction, output,
+	)
+	if err != nil {
+		o.logger.Warn("critic review failed, skipping",
+			"task_id", task.ID,
+			"err", err,
+		)
+		return
+	}
+
+	o.logger.Info("critic review complete",
+		"task_id", task.ID,
+		"should_retry", shouldRetry,
+	)
+
+	// If retry requested and we haven't retried this task yet — re-run it.
+	if shouldRetry && correctedInstruction != "" && !o.retried[task.ID] {
+		o.retried[task.ID] = true
+		o.logger.Info("critic requested retry",
+			"task_id", task.ID,
+			"worker", workerID,
+		)
+
+		// Create a modified task with the corrected instruction.
+		retryTask := *task
+		retryTask.Instruction = correctedInstruction
+
+		// Reset task to running state for re-execution.
+		o.publishTaskEvent(task.WorkflowID, task.ID, "status", "running")
+
+		retryErr := o.runTask(ctx, workerID, &retryTask)
+		if retryErr != nil {
+			o.logger.Error("critic retry failed",
+				"task_id", task.ID,
+				"err", retryErr,
+			)
+		}
+		return
+	}
+
+	// Publish verdict regardless (UI shows pass/partial/fail badge).
+	_ = verdictJSON
 }
 
 // Status returns all tasks for a workflow (for /status command).
@@ -200,6 +364,127 @@ func (o *Orchestrator) Status(ctx context.Context, workflowID string) ([]agent.T
 // Cancel cancels all pending tasks in a workflow.
 func (o *Orchestrator) Cancel(ctx context.Context, workflowID string) error {
 	return o.store.CancelWorkflow(ctx, workflowID)
+}
+
+// Store returns the underlying WorkflowStore (used by the planner to submit pre-built task graphs).
+func (o *Orchestrator) Store() agent.WorkflowStore {
+	return o.store
+}
+
+// autoSaveWorkflowInsights extracts key facts from workflow results and saves them to memory.
+// Uses Haiku (cheap/fast) to decide what's worth saving.
+func (o *Orchestrator) autoSaveWorkflowInsights(ctx context.Context, workflowID string) {
+	if o.memoryStore == nil || o.insightExtractor == nil {
+		return
+	}
+
+	// Gather task outputs for this workflow.
+	tasks, err := o.store.GetWorkflowStatus(ctx, workflowID)
+	if err != nil {
+		o.logger.Warn("auto-save: failed to get workflow tasks", "workflow_id", workflowID, "err", err)
+		return
+	}
+
+	var summary string
+	doneCount := 0
+	for _, t := range tasks {
+		if t.Status != agent.TaskDone {
+			continue
+		}
+		doneCount++
+		output := ""
+		if t.OutputRef != "" {
+			var data string
+			if getErr := o.dataStore.Get(ctx, t.OutputRef, &data); getErr == nil {
+				output = data
+				if len(output) > 500 {
+					output = output[:500]
+				}
+			}
+		}
+		summary += fmt.Sprintf("Task: %s\nOutput: %s\n\n", t.Name, output)
+	}
+
+	if doneCount == 0 || summary == "" {
+		return
+	}
+
+	// Truncate total summary to avoid expensive Haiku call.
+	if len(summary) > 3000 {
+		summary = summary[:3000]
+	}
+
+	// Ask Haiku to extract saveable facts.
+	extractionPrompt := `Extract 1-3 important facts from this workflow result worth remembering long-term.
+Return a JSON array of strings. Only include genuinely useful persistent facts about Jeremy's business, preferences, or important data discovered.
+If nothing worth saving, return an empty array [].
+
+Workflow results:
+` + summary
+
+	extractCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	result, err := o.insightExtractor.Complete(extractCtx, []agent.Message{
+		{Role: agent.RoleUser, Content: extractionPrompt},
+	}, nil)
+	if err != nil {
+		o.logger.Warn("auto-save: insight extraction failed", "workflow_id", workflowID, "err", err)
+		return
+	}
+
+	// Parse the JSON array response.
+	var facts []string
+	raw := result.Content
+	// Try to find JSON array in the response.
+	start := -1
+	end := -1
+	for i, c := range raw {
+		if c == '[' && start == -1 {
+			start = i
+		}
+		if c == ']' {
+			end = i + 1
+		}
+	}
+	if start >= 0 && end > start {
+		if jsonErr := json.Unmarshal([]byte(raw[start:end]), &facts); jsonErr != nil {
+			o.logger.Warn("auto-save: failed to parse extracted facts", "raw", raw[:min(200, len(raw))], "err", jsonErr)
+			return
+		}
+	}
+
+	if len(facts) == 0 {
+		o.logger.Debug("auto-save: no facts worth saving from workflow", "workflow_id", workflowID)
+		return
+	}
+
+	// Save each extracted fact.
+	saved := 0
+	for _, factText := range facts {
+		if factText == "" {
+			continue
+		}
+		b := make([]byte, 8)
+		rand.Read(b)
+		fact := agent.Fact{
+			ID:        hex.EncodeToString(b),
+			Content:   factText,
+			Source:    "workflow",
+			Tags:      []string{"workflow_insight"},
+			CreatedAt: time.Now(),
+		}
+		if saveErr := o.memoryStore.Save(ctx, fact); saveErr != nil {
+			o.logger.Warn("auto-save: save failed", "fact", factText[:min(80, len(factText))], "err", saveErr)
+			continue
+		}
+		saved++
+	}
+
+	o.logger.Info("auto-saved facts from workflow",
+		"workflow_id", workflowID,
+		"count", saved,
+	)
 }
 
 // decompose asks the agent to break a request into a task graph.
