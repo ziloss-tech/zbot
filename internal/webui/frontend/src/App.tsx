@@ -8,6 +8,8 @@ import { WorkflowHistory } from './components/WorkflowHistory'
 import { MetricsStrip } from './components/MetricsStrip'
 import { OutputPreview } from './components/OutputPreview'
 import { MemoryPanel } from './components/MemoryPanel'
+import { WorkspacePanel } from './components/WorkspacePanel'
+import { FilePreviewDrawer } from './components/FilePreviewDrawer'
 import { useSSE } from './hooks/useSSE'
 import { useWorkflow } from './hooks/useWorkflow'
 import { useMetrics } from './hooks/useMetrics'
@@ -35,6 +37,10 @@ export default function App() {
 
   // Memory panel (Sprint 12).
   const [memoryOpen, setMemoryOpen] = useState(false)
+
+  // Workspace panel (Sprint 13).
+  const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [wsPreviewFile, setWsPreviewFile] = useState<string | null>(null)
 
   // SSE connection.
   const { connected } = useSSE({
@@ -178,6 +184,13 @@ export default function App() {
             </span>
           )}
           <button
+            onClick={() => setWorkspaceOpen(true)}
+            className="rounded p-1 font-mono text-xs text-gray-500 transition-colors hover:bg-surface-700 hover:text-violet-400"
+            title="Workspace files"
+          >
+            📁
+          </button>
+          <button
             onClick={() => setMemoryOpen(true)}
             className="rounded p-1 font-mono text-xs text-gray-500 transition-colors hover:bg-surface-700 hover:text-amber-400"
             title="Memory panel"
@@ -311,6 +324,22 @@ export default function App() {
 
       {/* Memory panel (Sprint 12) */}
       <MemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} />
+
+      {/* Workspace panel (Sprint 13) */}
+      <WorkspacePanel
+        open={workspaceOpen}
+        onClose={() => setWorkspaceOpen(false)}
+        onPreview={(path) => {
+          setWsPreviewFile(path)
+          setWorkspaceOpen(false)
+        }}
+      />
+
+      {/* File preview drawer (Sprint 13) */}
+      <FilePreviewDrawer
+        filePath={wsPreviewFile}
+        onClose={() => setWsPreviewFile(null)}
+      />
     </div>
   )
 }

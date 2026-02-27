@@ -99,6 +99,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/memories", s.handleMemoriesAPI)
 	s.mux.HandleFunc("/api/memory/", s.handleMemoryDeleteAPI)
 
+	// Sprint 13 — Workspace File Panel API.
+	s.mux.HandleFunc("/api/workspace", s.handleWorkspaceAPI)
+	s.mux.HandleFunc("/api/workspace/download", s.handleWorkspaceDownloadAPI)
+	s.mux.HandleFunc("/api/workspace/preview", s.handleWorkspacePreviewAPI)
+	s.mux.HandleFunc("/api/workspace/file", s.handleWorkspaceDeleteAPI)
+
 	// Sprint 12 — Quick Chat API.
 	s.mux.HandleFunc("/api/chat", s.handleQuickChatAPI)
 

@@ -151,6 +151,15 @@ func (s *PGWorkflowStore) CancelWorkflow(ctx context.Context, workflowID string)
 	return err
 }
 
+// SetTaskOutputFiles records files created during a task. Sprint 13.
+func (s *PGWorkflowStore) SetTaskOutputFiles(ctx context.Context, taskID string, files []string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE zbot_tasks SET output_files = $2, updated_at = NOW() WHERE id = $1`,
+		taskID, files,
+	)
+	return err
+}
+
 // scanner is a common interface for pgx Row and Rows.
 type scanner interface {
 	Scan(dest ...any) error
@@ -200,6 +209,7 @@ func (n *NoopWorkflowStore) FailTask(_ context.Context, _, _ string) error     {
 func (n *NoopWorkflowStore) GetWorkflowStatus(_ context.Context, _ string) ([]agent.Task, error) {
 	return nil, fmt.Errorf("workflow store unavailable")
 }
-func (n *NoopWorkflowStore) CancelWorkflow(_ context.Context, _ string) error { return nil }
+func (n *NoopWorkflowStore) CancelWorkflow(_ context.Context, _ string) error          { return nil }
+func (n *NoopWorkflowStore) SetTaskOutputFiles(_ context.Context, _ string, _ []string) error { return nil }
 
 var _ agent.WorkflowStore = (*NoopWorkflowStore)(nil)

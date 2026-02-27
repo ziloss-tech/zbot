@@ -10,6 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -274,6 +277,9 @@ func (o *Orchestrator) runTask(ctx context.Context, workerID string, task *agent
 		"duration_ms", time.Since(taskStart).Milliseconds(),
 	)
 
+	// ─── Sprint 13: Track files created during this task ─────────────
+	o.scanAndRecordOutputFiles(ctx, task.ID, taskStart)
+
 	// ─── GPT-4o Critic Review ──────────────────────────────────────
 	if o.criticFunc != nil {
 		o.runCriticReview(ctx, workerID, task, result.Reply)
@@ -283,6 +289,57 @@ func (o *Orchestrator) runTask(ctx context.Context, workerID string, task *agent
 	o.checkAndAutoSave(ctx, task.WorkflowID)
 
 	return nil
+}
+
+// scanAndRecordOutputFiles scans ~/zbot-workspace for files created/modified
+// during task execution and records them as output_files.
+func (o *Orchestrator) scanAndRecordOutputFiles(ctx context.Context, taskID string, taskStart time.Time) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	wsRoot := filepath.Join(home, "zbot-workspace")
+
+	var outputFiles []string
+	_ = filepath.Walk(wsRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		name := info.Name()
+		if strings.HasPrefix(name, ".") {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		// If file was modified after task started, it was created/written during this task.
+		if info.ModTime().After(taskStart) {
+			relPath, _ := filepath.Rel(wsRoot, path)
+			outputFiles = append(outputFiles, relPath)
+		}
+		return nil
+	})
+
+	if len(outputFiles) == 0 {
+		return
+	}
+
+	if setErr := o.store.SetTaskOutputFiles(ctx, taskID, outputFiles); setErr != nil {
+		o.logger.Warn("failed to record output files",
+			"task_id", taskID,
+			"files", outputFiles,
+			"err", setErr,
+		)
+		return
+	}
+
+	o.logger.Info("recorded task output files",
+		"task_id", taskID,
+		"files", outputFiles,
+	)
 }
 
 // checkAndAutoSave checks if a workflow is fully complete and triggers insight extraction.

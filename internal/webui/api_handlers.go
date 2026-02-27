@@ -302,24 +302,32 @@ type workflowDetail struct {
 }
 
 type taskDetail struct {
-	ID         string   `json:"id"`
-	Step       int      `json:"step"`
-	Name       string   `json:"name"`
-	Status     string   `json:"status"`
-	Output     string   `json:"output"`
-	Error      string   `json:"error"`
-	DependsOn  []string `json:"depends_on"`
-	StartedAt  *string  `json:"started_at,omitempty"`
-	FinishedAt *string  `json:"finished_at,omitempty"`
+	ID          string   `json:"id"`
+	Step        int      `json:"step"`
+	Name        string   `json:"name"`
+	Status      string   `json:"status"`
+	Output      string   `json:"output"`
+	Error       string   `json:"error"`
+	DependsOn   []string `json:"depends_on"`
+	OutputFiles []string `json:"output_files,omitempty"` // Sprint 13
+	StartedAt   *string  `json:"started_at,omitempty"`
+	FinishedAt  *string  `json:"finished_at,omitempty"`
 }
 
 func (s *Server) handleWorkflowDetailAPI(w http.ResponseWriter, r *http.Request) {
+	// Sprint 13: route /api/workflow/:id/files to workflow files handler.
+	path := strings.TrimPrefix(r.URL.Path, "/api/workflow/")
+	if strings.HasSuffix(path, "/files") {
+		s.handleWorkflowFilesAPI(w, r)
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	wfID := strings.TrimPrefix(r.URL.Path, "/api/workflow/")
+	wfID := path
 	if wfID == "" {
 		http.Error(w, "missing workflow id", http.StatusBadRequest)
 		return
@@ -336,7 +344,7 @@ func (s *Server) handleWorkflowDetailAPI(w http.ResponseWriter, r *http.Request)
 
 	rows, err := s.db.Query(r.Context(),
 		`SELECT id, step, name, status, COALESCE(output, ''), COALESCE(error_msg, ''),
-		        depends_on, started_at, finished_at
+		        depends_on, COALESCE(output_files, '{}'), started_at, finished_at
 		 FROM zbot_tasks WHERE workflow_id = $1 ORDER BY step ASC`, wfID)
 	if err != nil {
 		http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError)
@@ -347,14 +355,19 @@ func (s *Server) handleWorkflowDetailAPI(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var td taskDetail
 		var deps []string
+		var outputFiles []string
 		var startedAt, finishedAt *time.Time
 		if err := rows.Scan(&td.ID, &td.Step, &td.Name, &td.Status, &td.Output, &td.Error,
-			&deps, &startedAt, &finishedAt); err != nil {
+			&deps, &outputFiles, &startedAt, &finishedAt); err != nil {
 			continue
 		}
 		td.DependsOn = deps
 		if td.DependsOn == nil {
 			td.DependsOn = []string{}
+		}
+		td.OutputFiles = outputFiles
+		if td.OutputFiles == nil {
+			td.OutputFiles = []string{}
 		}
 		if startedAt != nil {
 			ts := startedAt.Format(time.RFC3339)
@@ -681,6 +694,366 @@ func (s *Server) handleQuickChatAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(chatResponse{Reply: reply})
+}
+
+// ─── Sprint 13: WORKSPACE FILE PANEL API ──────────────────────────────────
+
+// WorkspaceFile represents a file in the workspace.
+type WorkspaceFile struct {
+	Name       string `json:"name"`
+	Path       string `json:"path"`       // relative to workspace root
+	Size       int64  `json:"size"`
+	SizeHuman  string `json:"size_human"`  // "12 KB", "1.2 MB"
+	Extension  string `json:"extension"`   // "md", "csv", "json", "py", "txt"
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
+	WorkflowID string `json:"workflow_id,omitempty"` // if file was created by a workflow
+}
+
+type workspaceResponse struct {
+	Files         []WorkspaceFile `json:"files"`
+	Total         int             `json:"total"`
+	WorkspacePath string          `json:"workspace_path"`
+}
+
+// handleWorkspaceAPI handles GET /api/workspace
+// Query params: ?ext=md&sort=newest&limit=50
+func (s *Server) handleWorkspaceAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	extFilter := r.URL.Query().Get("ext")
+	sortOrder := r.URL.Query().Get("sort")
+	if sortOrder == "" {
+		sortOrder = "newest"
+	}
+	limit := 50
+	if l := parseInt(r.URL.Query().Get("limit")); l > 0 && l <= 200 {
+		limit = l
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, "cannot resolve home directory", http.StatusInternalServerError)
+		return
+	}
+	wsRoot := filepath.Join(home, "zbot-workspace")
+
+	var files []WorkspaceFile
+	_ = filepath.Walk(wsRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // skip errors
+		}
+		// Skip hidden files and directories.
+		name := info.Name()
+		if strings.HasPrefix(name, ".") {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		relPath, _ := filepath.Rel(wsRoot, path)
+		ext := strings.TrimPrefix(filepath.Ext(name), ".")
+
+		// Extension filter.
+		if extFilter != "" && ext != extFilter {
+			return nil
+		}
+
+		files = append(files, WorkspaceFile{
+			Name:      name,
+			Path:      relPath,
+			Size:      info.Size(),
+			SizeHuman: humanSize(info.Size()),
+			Extension: ext,
+			CreatedAt: info.ModTime().Format(time.RFC3339),
+			UpdatedAt: info.ModTime().Format(time.RFC3339),
+		})
+		return nil
+	})
+
+	// Sort.
+	switch sortOrder {
+	case "oldest":
+		sortWorkspaceFiles(files, func(a, b WorkspaceFile) bool { return a.UpdatedAt < b.UpdatedAt })
+	case "largest":
+		sortWorkspaceFiles(files, func(a, b WorkspaceFile) bool { return a.Size > b.Size })
+	default: // newest
+		sortWorkspaceFiles(files, func(a, b WorkspaceFile) bool { return a.UpdatedAt > b.UpdatedAt })
+	}
+
+	total := len(files)
+	if len(files) > limit {
+		files = files[:limit]
+	}
+	if files == nil {
+		files = []WorkspaceFile{}
+	}
+
+	json.NewEncoder(w).Encode(workspaceResponse{
+		Files:         files,
+		Total:         total,
+		WorkspacePath: "~/zbot-workspace",
+	})
+}
+
+// handleWorkspaceDownloadAPI handles GET /api/workspace/download?path={relative_path}
+func (s *Server) handleWorkspaceDownloadAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	relPath := r.URL.Query().Get("path")
+	if relPath == "" {
+		http.Error(w, "missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Security: reject path traversal.
+	if strings.Contains(relPath, "..") || strings.HasPrefix(relPath, "/") {
+		http.Error(w, "access denied: invalid path", http.StatusForbidden)
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, "cannot resolve home directory", http.StatusInternalServerError)
+		return
+	}
+	wsRoot := filepath.Join(home, "zbot-workspace")
+	absPath := filepath.Clean(filepath.Join(wsRoot, relPath))
+	if !strings.HasPrefix(absPath, wsRoot) {
+		http.Error(w, "access denied: path traversal detected", http.StatusForbidden)
+		return
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+
+	// Set Content-Type based on extension.
+	ext := strings.ToLower(filepath.Ext(absPath))
+	contentType := "application/octet-stream"
+	switch ext {
+	case ".md", ".txt":
+		contentType = "text/plain; charset=utf-8"
+	case ".csv":
+		contentType = "text/csv; charset=utf-8"
+	case ".json":
+		contentType = "application/json; charset=utf-8"
+	case ".py", ".go", ".js", ".ts", ".sh":
+		contentType = "text/plain; charset=utf-8"
+	case ".html":
+		contentType = "text/html; charset=utf-8"
+	case ".pdf":
+		contentType = "application/pdf"
+	case ".png":
+		contentType = "image/png"
+	case ".jpg", ".jpeg":
+		contentType = "image/jpeg"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filepath.Base(absPath)))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	http.ServeFile(w, r, absPath)
+}
+
+// handleWorkspaceDeleteAPI handles DELETE /api/workspace/file?path={relative_path}
+func (s *Server) handleWorkspaceDeleteAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	relPath := r.URL.Query().Get("path")
+	if relPath == "" {
+		http.Error(w, "missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	if strings.Contains(relPath, "..") || strings.HasPrefix(relPath, "/") {
+		http.Error(w, "access denied: invalid path", http.StatusForbidden)
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, "cannot resolve home directory", http.StatusInternalServerError)
+		return
+	}
+	wsRoot := filepath.Join(home, "zbot-workspace")
+	absPath := filepath.Clean(filepath.Join(wsRoot, relPath))
+	if !strings.HasPrefix(absPath, wsRoot) {
+		http.Error(w, "access denied: path traversal detected", http.StatusForbidden)
+		return
+	}
+
+	if err := os.Remove(absPath); err != nil {
+		http.Error(w, "delete error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleWorkspacePreviewAPI handles GET /api/workspace/preview?path={relative_path}
+// Returns file contents as text (max 50KB).
+func (s *Server) handleWorkspacePreviewAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	relPath := r.URL.Query().Get("path")
+	if relPath == "" {
+		http.Error(w, "missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	if strings.Contains(relPath, "..") || strings.HasPrefix(relPath, "/") {
+		http.Error(w, "access denied: invalid path", http.StatusForbidden)
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, "cannot resolve home directory", http.StatusInternalServerError)
+		return
+	}
+	wsRoot := filepath.Join(home, "zbot-workspace")
+	absPath := filepath.Clean(filepath.Join(wsRoot, relPath))
+	if !strings.HasPrefix(absPath, wsRoot) {
+		http.Error(w, "access denied: path traversal detected", http.StatusForbidden)
+		return
+	}
+
+	// Check if binary.
+	ext := strings.ToLower(filepath.Ext(absPath))
+	binaryExts := map[string]bool{
+		".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+		".pdf": true, ".zip": true, ".tar": true, ".gz": true,
+		".exe": true, ".bin": true, ".so": true, ".dll": true,
+	}
+	if binaryExts[ext] {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "binary file — download only",
+		})
+		return
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		http.Error(w, "file not found: "+err.Error(), http.StatusNotFound)
+		return
+	}
+
+	const maxPreview = 50 * 1024 // 50KB
+	truncated := false
+	if len(data) > maxPreview {
+		data = data[:maxPreview]
+		truncated = true
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Write(data)
+	if truncated {
+		w.Write([]byte("\n\n[TRUNCATED — file exceeds 50KB preview limit]"))
+	}
+}
+
+// handleWorkflowFilesAPI handles GET /api/workflow/:id/files
+// Returns files created during a specific workflow.
+func (s *Server) handleWorkflowFilesAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	wfID := strings.TrimPrefix(r.URL.Path, "/api/workflow/")
+	wfID = strings.TrimSuffix(wfID, "/files")
+	if wfID == "" {
+		http.Error(w, "missing workflow id", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Query output_files from tasks in this workflow.
+	rows, err := s.db.Query(r.Context(),
+		`SELECT COALESCE(output_files, '{}') FROM zbot_tasks WHERE workflow_id = $1 AND output_files IS NOT NULL`, wfID)
+	if err != nil {
+		http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var allFiles []string
+	for rows.Next() {
+		var files []string
+		if err := rows.Scan(&files); err != nil {
+			continue
+		}
+		allFiles = append(allFiles, files...)
+	}
+
+	if allFiles == nil {
+		allFiles = []string{}
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{
+		"workflow_id": wfID,
+		"files":       allFiles,
+	})
+}
+
+// humanSize formats bytes into human-readable string.
+func humanSize(b int64) string {
+	switch {
+	case b < 1024:
+		return fmt.Sprintf("%d B", b)
+	case b < 1024*1024:
+		return fmt.Sprintf("%.1f KB", float64(b)/1024)
+	case b < 1024*1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.1f GB", float64(b)/(1024*1024*1024))
+	}
+}
+
+// sortWorkspaceFiles sorts files with a custom less function.
+func sortWorkspaceFiles(files []WorkspaceFile, less func(a, b WorkspaceFile) bool) {
+	for i := 1; i < len(files); i++ {
+		for j := i; j > 0 && less(files[j], files[j-1]); j-- {
+			files[j], files[j-1] = files[j-1], files[j]
+		}
+	}
 }
 
 // parseInt parses an integer from a string, returning 0 on failure.

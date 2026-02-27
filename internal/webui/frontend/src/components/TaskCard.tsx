@@ -35,7 +35,10 @@ export function TaskCard({ task, index, onViewFile }: TaskCardProps) {
     }
   }, [task.output, task.status])
 
-  const filePaths = task.output ? extractFilePaths(task.output) : []
+  // Sprint 13: Prefer output_files from API (tracked by orchestrator), fallback to regex extraction.
+  const apiFiles = task.outputFiles && task.outputFiles.length > 0 ? task.outputFiles : []
+  const regexFiles = task.output ? extractFilePaths(task.output) : []
+  const filePaths = apiFiles.length > 0 ? apiFiles : regexFiles
 
   return (
     <motion.div
@@ -136,15 +139,20 @@ export function TaskCard({ task, index, onViewFile }: TaskCardProps) {
         {/* File preview buttons */}
         {filePaths.length > 0 && onViewFile && (
           <div className="mt-2 flex flex-wrap gap-1">
-            {filePaths.map((fp) => (
-              <button
-                key={fp}
-                onClick={() => onViewFile(fp)}
-                className="rounded bg-planner/10 px-2 py-0.5 font-mono text-[10px] text-planner transition-colors hover:bg-planner/20"
-              >
-                📄 {fp.split('/').pop()}
-              </button>
-            ))}
+            {filePaths.map((fp) => {
+              const fileName = fp.split('/').pop() || fp
+              const ext = fileName.split('.').pop()?.toLowerCase() || ''
+              const icon = ext === 'csv' ? '📊' : ext === 'json' ? '{}' : ext === 'pdf' ? '📕' : '📄'
+              return (
+                <button
+                  key={fp}
+                  onClick={() => onViewFile(fp)}
+                  className="rounded bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] text-violet-400 transition-colors hover:bg-violet-500/20"
+                >
+                  {icon} {fileName}
+                </button>
+              )
+            })}
           </div>
         )}
       </div>

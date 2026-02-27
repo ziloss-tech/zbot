@@ -59,10 +59,11 @@ type Task struct {
 	Status     TaskStatus
 	DependsOn  []string  // task IDs that must complete first
 	InputRef   string    // reference to input data in store
-	OutputRef  string    // reference to output data in store
-	Error      string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	OutputRef   string    // reference to output data in store
+	OutputFiles []string  // Sprint 13: files created during this task (relative paths)
+	Error       string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // TaskStatus represents the lifecycle state of a task.
@@ -157,6 +158,9 @@ type WorkflowStore interface {
 
 	// CancelWorkflow cancels all pending tasks in a workflow.
 	CancelWorkflow(ctx context.Context, workflowID string) error
+
+	// SetTaskOutputFiles records files created during a task. Sprint 13.
+	SetTaskOutputFiles(ctx context.Context, taskID string, files []string) error
 }
 
 // DataStore is the port for structured output storage between workflow steps.
