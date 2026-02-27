@@ -24,7 +24,7 @@ func (t *SaveMemoryTool) Name() string { return "save_memory" }
 func (t *SaveMemoryTool) Definition() agent.ToolDefinition {
 	return agent.ToolDefinition{
 		Name:        "save_memory",
-		Description: "Save an important fact to long-term memory. Use this when you learn something important about Jeremy, his business, preferences, or discover a useful insight during a task.",
+		Description: "Save an important fact to long-term memory. Persists across all future sessions.\n\nWHEN TO USE: Be proactive — save anything Jeremy will want later without being asked.\nGOOD FACTS TO SAVE:\n- Business facts: \"Lead Certain charges $X per lead for roofing contractors\"\n- Preferences: \"Jeremy prefers markdown reports saved to workspace/reports/\"\n- Technical: \"Ziloss CRM uses GHL Location ID fRrP1e3LGLFewc5dQDhS for Esler\"\n- Insights: \"GoHighLevel's biggest competitor weakness is multi-timezone scheduling\"\n\nDO NOT SAVE:\n- Temporary task outputs (save those as files instead)\n- Information Jeremy already knows about himself\n- Generic facts that aren't specific to Jeremy's situation\n\nEDGE CASES:\n- Fact must be a complete sentence to be useful — \"$200K\" alone is not a useful memory\n- Will fail silently if Postgres is unavailable — in that case it falls back to in-memory (lost on restart)",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []string{"fact"},
@@ -85,7 +85,7 @@ func (t *SearchMemoryTool) Name() string { return "search_memory" }
 func (t *SearchMemoryTool) Definition() agent.ToolDefinition {
 	return agent.ToolDefinition{
 		Name:        "search_memory",
-		Description: "Search long-term memory for facts relevant to a topic. Use this when Jeremy references something from the past or when context from previous sessions would help.",
+		Description: "Search long-term memory using semantic similarity. Finds facts saved in past sessions.\n\nWHEN TO USE:\n- Jeremy references something from the past: \"like we discussed before\", \"the thing with X\"\n- You need context about his preferences, business details, or past decisions\n- Before starting research — check if the answer is already in memory\n\nGOOD QUERIES:\n- \"Lead Certain pricing\" — finds facts about that business\n- \"Jeremy preferences reports\" — finds how he likes outputs formatted\n- \"GHL location ID\" — finds saved credentials or IDs\n\nEDGE CASES:\n- Search is semantic (meaning-based), not keyword-exact — rephrase if you get irrelevant results\n- Returns up to 5 results by default — increase limit if you need broader context\n- Returns empty if nothing relevant has been saved yet — that's normal for new topics",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []string{"query"},

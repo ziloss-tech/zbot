@@ -24,13 +24,13 @@ func (t *WebSearchTool) Name() string { return "web_search" }
 func (t *WebSearchTool) Definition() agent.ToolDefinition {
 	return agent.ToolDefinition{
 		Name:        "web_search",
-		Description: "Search the web via DuckDuckGo. Returns titles, snippets, and URLs for top results.",
+		Description: "Search the web via DuckDuckGo. Returns titles, snippets, and URLs — NOT full page content.\n\nWHEN TO USE: Use for discovering relevant URLs, checking current prices, finding recent news, or identifying which page to read next.\nALWAYS FOLLOW UP: Snippets are truncated. To get full content, call scrape_page on the most relevant URL after this.\n\nGOOD QUERIES: \"GoHighLevel pricing 2025\", \"site:reddit.com GoHighLevel complaints\", \"Claude API rate limits anthropic docs\"\n\nEDGE CASES:\n- Returns max 20 results. Broaden the query if you get 0 results.\n- Never cite a snippet as a source — always scrape the full page for accuracy.\n- DuckDuckGo may occasionally return 0 results for very obscure queries — try rephrasing.",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []string{"query"},
 			"properties": map[string]any{
-				"query":       map[string]any{"type": "string", "description": "Search query"},
-				"max_results": map[string]any{"type": "integer", "description": "Max results (default 8, max 20)"},
+				"query":       map[string]any{"type": "string", "description": "Search query. Be specific — include year, product name, or domain when relevant."},
+				"max_results": map[string]any{"type": "integer", "description": "Max results (default 8, max 20). Use 3-5 for focused lookups, 15-20 for broad research."},
 			},
 		},
 	}
@@ -175,13 +175,13 @@ func (t *ScrapePageTool) Name() string { return "scrape_page" }
 func (t *ScrapePageTool) Definition() agent.ToolDefinition {
 	return agent.ToolDefinition{
 		Name:        "scrape_page",
-		Description: "Fetch a web page and extract readable text. Use after web_search to get full page details.",
+		Description: "Fetch a web page and extract readable text content. Use this AFTER web_search to read full page details.\n\nWHEN TO USE: After web_search identifies a relevant URL, call this to get the actual content — pricing, documentation, article text, etc.\n\nGOOD EXAMPLES:\n- Scrape a pricing page after searching for a competitor's pricing\n- Read a full news article after finding it via web_search\n- Extract documentation content for a specific API\n\nEDGE CASES:\n- Will fail with HTTP 403 or 429 if the site blocks scrapers (LinkedIn, Cloudflare-protected sites). Try a different URL.\n- Returns max 20,000 characters — very long pages are truncated with [truncated] notice.\n- Some pages are JavaScript-rendered — content may be minimal if the page requires JS. Try a cached or alternate URL.\n- PDFs and binary files cannot be scraped — you'll get an error or garbled content.",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []string{"url"},
 			"properties": map[string]any{
-				"url":       map[string]any{"type": "string", "description": "Full URL to fetch"},
-				"max_chars": map[string]any{"type": "integer", "description": "Max characters to return (default 8000)"},
+				"url":       map[string]any{"type": "string", "description": "Full URL to fetch including https://"},
+				"max_chars": map[string]any{"type": "integer", "description": "Max characters to return (default 8000, max 20000). Use higher for long articles."},
 			},
 		},
 	}
