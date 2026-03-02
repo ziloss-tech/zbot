@@ -193,8 +193,13 @@ Usage:
 }
 
 // connectPostgres connects to the same Cloud SQL instance ZBOT uses.
+// Password comes from ZBOT_DB_PASSWORD env var (same fallback as cmd/zbot/wire.go).
 func connectPostgres(ctx context.Context) (*pgxpool.Pool, error) {
-	connStr := "postgresql://ziloss:ZilossMemory2024!@34.28.163.109:5432/ziloss_memory?sslmode=disable"
+	dbPass := os.Getenv("ZBOT_DB_PASSWORD")
+	if dbPass == "" {
+		return nil, fmt.Errorf("ZBOT_DB_PASSWORD env var not set — export it or source your .env")
+	}
+	connStr := fmt.Sprintf("postgresql://ziloss:%s@34.28.163.109:5432/ziloss_memory?sslmode=disable", dbPass)
 	poolCfg, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
