@@ -34,6 +34,7 @@ import (
 	skillMemory "github.com/jeremylerwick-max/zbot/internal/skills/memory"
 	skillSearch "github.com/jeremylerwick-max/zbot/internal/skills/search"
 	skillSheets "github.com/jeremylerwick-max/zbot/internal/skills/sheets"
+	"github.com/jeremylerwick-max/zbot/internal/research"
 	"github.com/jeremylerwick-max/zbot/internal/tools"
 	"github.com/jeremylerwick-max/zbot/internal/webui"
 	"github.com/jeremylerwick-max/zbot/internal/workflow"
@@ -142,8 +143,10 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 
 	// ── Memory Store (pgvector or in-memory fallback) ───────────────────────
 	var memStore agent.MemoryStore
+	var sharedEmbedder memory.Embedder // hoisted for use in research pipeline (Sprint 16)
 	if pgDB == nil {
 		memStore = memory.NewInMemoryStore(logger)
+		sharedEmbedder = memory.NoopEmbedder{}
 	} else {
 		var embedder memory.Embedder
 		vertexEmbed, vertexErr := memory.NewVertexEmbedder(ctx, cfg.GCPProject, "us-central1", logger)
@@ -154,6 +157,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			embedder = vertexEmbed
 			defer vertexEmbed.Close()
 		}
+		sharedEmbedder = embedder
 
 		store, storeErr := memory.New(ctx, pgDB, embedder, logger, "zbot")
 		if storeErr != nil {
@@ -323,13 +327,23 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		logger.Warn("postgres unavailable — workflows disabled")
 	}
 
-	// ── Scheduler (Sprint 6) ────────────────────────────────────────────────
+	// ── Scheduler + Runner (Sprint 6 + Sprint 14) ──────────────────────────
 	var sched *scheduler.Scheduler
+	var schedJobStore scheduler.JobStore
+	var schedRunner *scheduler.Runner
 	if pgDB != nil {
 		jobStore, jsErr := scheduler.NewPGJobStore(ctx, pgDB)
 		if jsErr != nil {
 			logger.Warn("scheduler job store init failed", "err", jsErr)
 		} else {
+			schedJobStore = jobStore
+
+			// Sprint 14: Create monitors table.
+			if mErr := jobStore.CreateMonitorsTable(ctx); mErr != nil {
+				logger.Warn("monitors table creation failed", "err", mErr)
+			}
+
+			// Legacy handler: direct agent.Run() for backward compat.
 			schedHandler := func(ctx context.Context, sessionID, instruction string) {
 				reply, err := ag.Run(ctx, agent.TurnInput{
 					SessionID: sessionID,
@@ -348,13 +362,170 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			}
 			sched = scheduler.New(jobStore, schedHandler, logger)
 			sched.Start(ctx)
-			logger.Info("scheduler started")
+
+			// Sprint 14: Runner bridges scheduler to planner+orchestrator.
+			schedRunner = scheduler.NewRunner(sched, jobStore, logger)
+			schedRunner.Start(ctx)
+
+			logger.Info("scheduler + runner started")
 		}
+	}
+
+	// ── Deep Research Pipeline (Sprint Deep Research) ───────────────────
+	var researchOrch *research.ResearchOrchestrator
+	var researchStore *research.PGResearchStore
+	var claimMem *research.ClaimMemory // hoisted for Sprint 17 command handler
+	var webServer *webui.Server
+
+	openRouterKey, orErr := sm.Get(ctx, "OPENROUTER_API_KEY")
+	if orErr == nil && openRouterKey != "" && pgDB != nil {
+		// OpenRouter models: planner, searcher (via tools), extractor.
+		plannerClient := llm.NewOpenRouterClient(openRouterKey, "mistralai/mistral-large", logger)
+		searcherClient := llm.NewOpenRouterClient(openRouterKey, "meta-llama/llama-4-scout", logger)
+		// Mistral Small 3.1 — fast extraction (~0.10/1M vs $1.79/1M for 405B), 20x speed improvement.
+		// 405B was taking 3-4 minutes per extraction call. Mistral Small handles JSON extraction well.
+		// Switch to 405B if extraction quality drops: "meta-llama/llama-3.1-405b-instruct"
+		extractorClient := llm.NewOpenRouterClient(openRouterKey, "mistralai/mistral-small-3.1-24b-instruct", logger)
+
+		// GPT-4o critic (direct OpenAI — different provider than extractor).
+		var criticClient *llm.OpenAIClient
+		if openaiKey, openaiErr := sm.Get(ctx, "openai-api-key"); openaiErr == nil && openaiKey != "" {
+			criticClient = llm.NewOpenAIClient(openaiKey, "gpt-4o", logger)
+		}
+
+		// Claude synthesizer (already have llmClient).
+		synthesizerClient := llmClient // Claude Sonnet 4.6
+
+		// Search tool for the searcher agent.
+		searchTool := tools.NewWebSearchTool(braveKey)
+
+		// Research store + budget tracker.
+		rStore, rsErr := research.NewPGResearchStore(ctx, pgDB)
+		if rsErr != nil {
+			logger.Warn("research store init failed", "err", rsErr)
+		} else {
+			researchStore = rStore
+		}
+
+		budgetTracker := research.NewBudgetTracker(pgDB)
+
+		// Sprint 16: Cross-session claim memory (timestamped, staleness-aware).
+		if pgDB != nil {
+			claimMem, _ = research.NewClaimMemory(ctx, pgDB, sharedEmbedder, logger)
+			if claimMem != nil {
+				logger.Info("claim memory ready")
+			}
+		}
+
+		if criticClient != nil && researchStore != nil {
+			researchOrch = research.NewResearchOrchestrator(
+				plannerClient,
+				searcherClient,
+				extractorClient,
+				criticClient,
+				synthesizerClient,
+				searchTool,
+				memStore,
+				claimMem,
+				researchStore,
+				budgetTracker,
+				logger,
+			)
+			logger.Info("deep research pipeline ready",
+				"planner", plannerClient.DisplayName(),
+				"searcher", searcherClient.DisplayName(),
+				"extractor", extractorClient.DisplayName(),
+				"critic", "GPT-4o · OpenAI",
+				"synthesizer", llmClient.ModelName(),
+			)
+		} else {
+			logger.Warn("deep research partially unavailable — missing critic or store")
+		}
+	} else {
+		logger.Warn("deep research disabled — needs openrouter-api-key + Postgres")
 	}
 
 	// ── Conversation History (in-memory, resets on restart) ──────────────────
 	var histMu sync.Mutex
 	history := make(map[string][]agent.Message)
+
+	// ── Sprint 20: Persistent Claude Chat Store ───────────────────────────────
+	var chatStore *webui.ChatStore
+	if pgDB != nil {
+		cs, chatStoreErr := webui.NewChatStore(ctx, pgDB)
+		if chatStoreErr != nil {
+			logger.Warn("chat store init failed", "err", chatStoreErr)
+		} else {
+			chatStore = cs
+			logger.Info("claude chat store ready")
+		}
+	}
+
+	// ── Sprint 20: Persistent Claude Chat function ────────────────────────────
+	// Accepts history + new message, calls Claude with full context.
+	var persistentChatFunc webui.PersistentChatFunc
+	if chatStore != nil {
+		persistentChatFunc = func(ctx context.Context, history []webui.ChatMessage, message string) (string, error) {
+			// Build memory context.
+			memContext := ""
+			if facts, memErr := memStore.Search(ctx, message, 5); memErr == nil && len(facts) > 0 {
+				memContext = "\n\n## What You Remember About Jeremy\n"
+				for _, f := range facts {
+					memContext += fmt.Sprintf("- %s\n", f.Content)
+				}
+			}
+
+			// Build message list with history.
+			chatSystemPrompt := systemPrompt + skillRegistry.SystemPromptAddendum() + memContext
+			msgs := []agent.Message{
+				{Role: agent.RoleSystem, Content: chatSystemPrompt},
+			}
+			// Inject history as alternating user/assistant turns.
+			for _, h := range history {
+				role := agent.RoleUser
+				if h.Role == "assistant" {
+					role = agent.RoleAssistant
+				}
+				msgs = append(msgs, agent.Message{
+					Role:      role,
+					Content:   h.Content,
+					CreatedAt: h.CreatedAt,
+				})
+			}
+			// Add new user message.
+			msgs = append(msgs, agent.Message{
+				Role:      agent.RoleUser,
+				Content:   message,
+				CreatedAt: time.Now(),
+			})
+
+			result, err := llmClient.Complete(ctx, msgs, nil)
+			if err != nil {
+				return "", fmt.Errorf("claude chat: %w", err)
+			}
+			return result.Content, nil
+		}
+	}
+
+	// ── Sprint 17: Slack Command Handler ─────────────────────────────────────
+	cmdHandler := &SlackCommands{
+		orch:          orch,
+		taskPlanner:   taskPlanner,
+		sched:         sched,
+		schedJobStore: schedJobStore,
+		researchOrch:  researchOrch,
+		researchStore: researchStore,
+		memStore:      memStore,
+		claimMemory:   claimMem, // hoisted from research pipeline init block
+	}
+
+	// Sprint 20: Wire //claude command to persistent chat.
+	if chatStore != nil && persistentChatFunc != nil {
+		cmdHandler.claudeChat = func(ctx context.Context, message, source string) (string, error) {
+			history, _ := chatStore.History(ctx, 40)
+			return persistentChatFunc(ctx, history, message)
+		}
+	}
 
 	// Handler: msg → slash command or agent.Run() → reply
 	handler := func(ctx context.Context, sessionID, userID, text string, attachments []gateway.Attachment) (string, error) {
@@ -367,30 +538,9 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 
 		trimmed := strings.TrimSpace(text)
 
-		// ── /status <workflowID> — show workflow progress ────────────────────
-		if strings.HasPrefix(trimmed, "/status ") && orch != nil {
-			wfID := strings.TrimSpace(strings.TrimPrefix(trimmed, "/status "))
-			tasks, err := orch.Status(ctx, wfID)
-			if err != nil {
-				return fmt.Sprintf("❌ Could not get status for `%s`: %v", wfID, err), nil
-			}
-			done := 0
-			for _, t := range tasks {
-				if t.Status == agent.TaskDone {
-					done++
-				}
-			}
-			sum := &workflow.WorkflowSummary{WorkflowID: wfID, Tasks: tasks, Done: done, Total: len(tasks)}
-			return sum.Format(), nil
-		}
-
-		// ── /cancel <workflowID> — cancel pending tasks ───────────────────────
-		if strings.HasPrefix(trimmed, "/cancel ") && orch != nil {
-			wfID := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cancel "))
-			if err := orch.Cancel(ctx, wfID); err != nil {
-				return fmt.Sprintf("❌ Cancel failed: %v", err), nil
-			}
-			return fmt.Sprintf("🚫 Workflow `%s` — pending tasks canceled.", wfID), nil
+		// ── Sprint 17: Route slash commands first ─────────────────────────
+		if reply, handled := cmdHandler.Handle(ctx, sessionID, trimmed); handled {
+			return reply, nil
 		}
 
 		// ── plan: <goal> — GPT-4o plans, Claude executes ─────────────────────
@@ -430,7 +580,43 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			return sb.String(), nil
 		}
 
-		// plan: without orchestrator
+		// ── research: <goal> — deep multi-model research pipeline ──────────
+		if strings.HasPrefix(trimmed, "research: ") {
+			goal := strings.TrimSpace(strings.TrimPrefix(trimmed, "research: "))
+			if goal == "" {
+				return "Usage: `research: <goal>`\nExample: `research: what are the top GoHighLevel competitors and how do they compare?`", nil
+			}
+
+			if researchOrch == nil {
+				return "❌ Deep Research not available — needs OpenRouter + Postgres.", nil
+			}
+
+			resID := "res_" + randomID()
+
+			if researchStore != nil {
+				_ = researchStore.CreateSession(ctx, resID, goal)
+			}
+
+			go func() {
+				bgCtx := context.Background()
+				state, resErr := researchOrch.RunDeepResearch(bgCtx, goal, resID)
+				if resErr != nil {
+					logger.Error("deep research failed", "session_id", resID, "err", resErr)
+					if researchStore != nil {
+						_ = researchStore.FailSession(bgCtx, resID, resErr.Error())
+					}
+					return
+				}
+				if researchStore != nil {
+					_ = researchStore.CompleteSession(bgCtx, resID, state.FinalReport, state)
+				}
+				logger.Info("deep research completed", "session_id", resID, "iterations", state.Iteration, "cost", fmt.Sprintf("$%.4f", state.CostUSD))
+			}()
+
+			return fmt.Sprintf("🔬 *Deep Research started* — `%s`\nSession: `%s`\n\n5 AI models collaborating. Track: `/research status %s`\nUI: http://localhost:18790", goal, resID, resID[:12]), nil
+		}
+
+		// ── plan: without dependencies ────────────────────────────────────
 		if strings.HasPrefix(trimmed, "plan: ") && (taskPlanner == nil || orch == nil) {
 			if taskPlanner == nil {
 				return "❌ Planner not available — add `openai-api-key` to Secret Manager.", nil
@@ -439,10 +625,10 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		}
 
 		// ── /workflow <instruction> — submit a multi-step workflow ────────────
-		if (strings.HasPrefix(trimmed, "/workflow ") || isWorkflowRequest(trimmed)) && orch != nil {
+		if (strings.HasPrefix(trimmed, "//workflow ") || isWorkflowRequest(trimmed)) && orch != nil {
 			instruction := trimmed
-			if strings.HasPrefix(trimmed, "/workflow ") {
-				instruction = strings.TrimSpace(strings.TrimPrefix(trimmed, "/workflow "))
+			if strings.HasPrefix(trimmed, "//workflow ") {
+				instruction = strings.TrimSpace(strings.TrimPrefix(trimmed, "//workflow "))
 			}
 			wfID, err := orch.Submit(ctx, sessionID, instruction)
 			if err != nil {
@@ -452,8 +638,8 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		}
 
 		// ── /schedule <cron> | <instruction> — add a scheduled job ───────────
-		if strings.HasPrefix(trimmed, "/schedule ") && sched != nil {
-			parts := strings.SplitN(strings.TrimPrefix(trimmed, "/schedule "), " | ", 2)
+		if strings.HasPrefix(trimmed, "//schedule ") && sched != nil {
+			parts := strings.SplitN(strings.TrimPrefix(trimmed, "//schedule "), " | ", 2)
 			if len(parts) != 2 {
 				return "Usage: `/schedule <cron_expr> | <instruction>`\nExample: `/schedule 0 8 * * 1 | Check open GHL leads`", nil
 			}
@@ -470,33 +656,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			if err != nil {
 				return fmt.Sprintf("❌ Schedule failed: %v", err), nil
 			}
-			return fmt.Sprintf("⏰ Scheduled `%s` — cron: `%s`\nUse `/schedules` to see all.", id, cronExpr), nil
-		}
-
-		// ── /schedules — list all scheduled jobs ─────────────────────────────
-		if trimmed == "/schedules" && sched != nil {
-			jobs := sched.List()
-			if len(jobs) == 0 {
-				return "No scheduled jobs. Use `/schedule <cron> | <instruction>` to create one.", nil
-			}
-			var sb strings.Builder
-			sb.WriteString("⏰ **Scheduled Jobs**\n\n")
-			for _, j := range jobs {
-				sb.WriteString(fmt.Sprintf("• `%s` — `%s` — %s\n  Next: %s\n",
-					j.ID, j.CronExpr, truncateStr(j.Instruction, 50),
-					j.NextRun.Format("2006-01-02 15:04 MST"),
-				))
-			}
-			return sb.String(), nil
-		}
-
-		// ── /unschedule <id> — remove a scheduled job ───────────────────────
-		if strings.HasPrefix(trimmed, "/unschedule ") && sched != nil {
-			id := strings.TrimSpace(strings.TrimPrefix(trimmed, "/unschedule "))
-			if err := sched.Remove(ctx, id); err != nil {
-				return fmt.Sprintf("❌ Unschedule failed: %v", err), nil
-			}
-			return fmt.Sprintf("🗑️ Job `%s` removed.", id), nil
+			return fmt.Sprintf("⏰ Scheduled `%s` — cron: `%s`\nUse `/schedule list` to see all.", id, cronExpr), nil
 		}
 
 		// Process attachments: images go to Claude multimodal, PDFs get text extracted.
@@ -585,7 +745,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 
 	// ── Web UI (Sprint 8 + Sprint 11 Dual Brain Command Center) ─────────────
 	if pgDB != nil {
-		webServer := webui.New(pgDB, logger)
+		webServer = webui.New(pgDB, logger)
 
 		// Sprint 12: Wire memory store for memory panel API.
 		webServer.SetMemoryStore(memStore)
@@ -738,6 +898,19 @@ If no, respond with JSON: {"save": false}`, message, reply)
 			}
 		}
 
+		// Sprint 14: Wire scheduler + job store for schedule panel API.
+		if sched != nil && schedJobStore != nil {
+			webServer.SetScheduler(sched, schedJobStore)
+			webServer.SetLLMClient(llmClient)
+			logger.Info("schedule panel wired into web UI")
+		}
+
+		// Deep Research: Wire research orchestrator + store into web server.
+		if researchOrch != nil && researchStore != nil {
+			webServer.SetResearch(researchOrch, researchStore)
+			logger.Info("deep research panel wired into web UI")
+		}
+
 		go webServer.Start(ctx)
 		logger.Info("web UI available", "url", "http://localhost:18790")
 	} else {
@@ -752,6 +925,17 @@ If no, respond with JSON: {"save": false}`, message, reply)
 		handler,
 		logger,
 	)
+
+	// Wire Slack notifier for research completions and scheduled jobs.
+	// allowedUserID is the DM channel to post to (Slack DM channel = user ID).
+	if allowedUserID != "" && allowedUserID != "PENDING" {
+		if webServer != nil {
+			webServer.SetSlackNotifier(slackGW, allowedUserID)
+		}
+		if schedRunner != nil {
+			schedRunner.SetFallbackChannel(allowedUserID)
+		}
+	}
 
 	logger.Info("ZBOT starting — connecting to Slack",
 		"model", llmClient.ModelName(),

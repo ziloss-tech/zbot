@@ -4,342 +4,222 @@ import { CommandBar } from './components/CommandBar'
 import { PlannerPanel } from './components/PlannerPanel'
 import { ExecutorPanel } from './components/ExecutorPanel'
 import { HandoffAnimation } from './components/HandoffAnimation'
-import { WorkflowHistory } from './components/WorkflowHistory'
 import { MetricsStrip } from './components/MetricsStrip'
 import { OutputPreview } from './components/OutputPreview'
 import { MemoryPanel } from './components/MemoryPanel'
 import { WorkspacePanel } from './components/WorkspacePanel'
 import { FilePreviewDrawer } from './components/FilePreviewDrawer'
+import { SchedulePanel } from './components/SchedulePanel'
+import { ResearchPanel } from './components/ResearchPanel'
+import { Sidebar } from './components/Sidebar'
+import { ObserverPanel } from './components/ObserverPanel'
+import { DashboardPage } from './components/DashboardPage'
+import { KnowledgeBasePage } from './components/KnowledgeBasePage'
 import { useSSE } from './hooks/useSSE'
 import { useWorkflow } from './hooks/useWorkflow'
 import { useMetrics } from './hooks/useMetrics'
-import { submitPlan, sendChat } from './lib/api'
+import { submitPlan } from './lib/api'
+import type { NavPage } from './components/Sidebar'
 import type { SSEEvent } from './lib/types'
 
+type PanelFocus = 'balanced' | 'planner' | 'executor' | 'observer'
+
+function panelWidths(focus: PanelFocus, observerExpanded: boolean): [string, string, string] {
+  if (observerExpanded) return ['14%', '18%', '68%']
+  switch (focus) {
+    case 'planner':  return ['46%', '30%', '24%']
+    case 'executor': return ['20%', '54%', '26%']
+    case 'observer': return ['20%', '20%', '60%']
+    default:         return ['33%', '40%', '27%']
+  }
+}
+
 export default function App() {
-  // Active workflow (displayed in the panels).
   const { state, startPlan, handleSSEEvent, setPhase } = useWorkflow()
   const [showHandoff, setShowHandoff] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
   const metrics = useMetrics()
 
-  // Track all workflow IDs so we can switch between them.
-  const [allWorkflowIDs, setAllWorkflowIDs] = useState<string[]>([])
+  const [activePage, setActivePage] = useState<NavPage>('workflows')
+  const [panelFocus, setPanelFocus] = useState<PanelFocus>('balanced')
+  const [observerExpanded, setObserverExpanded] = useState(false)
 
-  // Quick chat mode (non-plan: messages).
-  const [quickChatMode, setQuickChatMode] = useState(false)
-  const [chatMessages, setChatMessages] = useState<{role: 'user' | 'assistant'; content: string}[]>([])
-  const [isChatting, setIsChatting] = useState(false)
-  const chatEndRef = useRef<HTMLDivElement>(null)
-
-  // Output file preview drawer.
   const [previewFile, setPreviewFile] = useState<string | null>(null)
-
-  // Memory panel (Sprint 12).
   const [memoryOpen, setMemoryOpen] = useState(false)
-
-  // Workspace panel (Sprint 13).
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [wsPreviewFile, setWsPreviewFile] = useState<string | null>(null)
+  const [scheduleOpen, setScheduleOpen] = useState(false)
+  const [researchOpen, setResearchOpen] = useState(false)
 
-  // SSE connection.
+  const activeTask = state.tasks.find((t) => t.status === 'running') ?? null
+
   const { connected } = useSSE({
     workflowID: state.id || null,
     onEvent: (evt: SSEEvent) => {
       handleSSEEvent(evt)
-      if (evt.source === 'planner' && evt.type === 'handoff') {
-        setShowHandoff(true)
-      }
+      if (evt.source === 'planner' && evt.type === 'handoff') setShowHandoff(true)
     },
   })
 
-  // Track connection state for reconnecting banner.
+  useEffect(() => {
+    if (state.phase === 'planning') setPanelFocus('planner')
+    else if (state.phase === 'executing') setPanelFocus('executor')
+    else if (state.phase === 'complete' || state.phase === 'idle') setPanelFocus('balanced')
+  }, [state.phase])
+
   const prevConnected = useRef(connected)
   useEffect(() => {
-    if (!connected && prevConnected.current) {
-      setReconnecting(true)
-    }
-    if (connected && !prevConnected.current) {
-      setReconnecting(false)
-    }
+    if (!connected && prevConnected.current) setReconnecting(true)
+    if (connected && !prevConnected.current) setReconnecting(false)
     prevConnected.current = connected
   }, [connected])
 
-  // Keyboard shortcuts.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      // Cmd+1/2 — switch between workflows.
-      if ((e.metaKey || e.ctrlKey) && e.key === '1' && allWorkflowIDs[0]) {
-        e.preventDefault()
-        handleSelectWorkflow(allWorkflowIDs[0])
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === '2' && allWorkflowIDs[1]) {
-        e.preventDefault()
-        handleSelectWorkflow(allWorkflowIDs[1])
-      }
-      // Esc — exit quick chat mode.
-      if (e.key === 'Escape') {
-        setQuickChatMode(false)
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [allWorkflowIDs]) // eslint-disable-line react-hooks/exhaustive-deps
-
   const handleSubmit = useCallback(async (goal: string) => {
-    setQuickChatMode(false)
-
+    setActivePage('workflows')
     try {
       const res = await submitPlan(goal)
       startPlan(res.workflow_id, goal)
-      setAllWorkflowIDs((prev) => [res.workflow_id, ...prev.filter((id) => id !== res.workflow_id)])
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
       startPlan('error', goal)
-      handleSSEEvent({
-        workflow_id: 'error',
-        source: 'planner',
-        type: 'error',
-        payload: message,
-      })
+      handleSSEEvent({ workflow_id: 'error', source: 'planner', type: 'error', payload: message })
     }
   }, [startPlan, handleSSEEvent])
-
-  const handleChat = useCallback(async (message: string) => {
-    setQuickChatMode(true)
-    setChatMessages((prev) => [...prev, { role: 'user', content: message }])
-    setIsChatting(true)
-
-    try {
-      const res = await sendChat(message)
-      setChatMessages((prev) => [...prev, { role: 'assistant', content: res.reply }])
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Unknown error'
-      setChatMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${errMsg}` }])
-    } finally {
-      setIsChatting(false)
-    }
-  }, [])
-
-  // Auto-scroll chat.
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chatMessages])
 
   const handleHandoffComplete = useCallback(() => {
     setShowHandoff(false)
     setPhase('executing')
   }, [setPhase])
 
-  const handleSelectWorkflow = useCallback((_id: string) => {
-    // Switching workflows would reload state from the API.
-    // For now, this is wired but the full reload is deferred.
-  }, [])
-
-  const handleViewFile = useCallback((path: string) => {
-    setPreviewFile(path)
-  }, [])
-
-  const isPlanning = state.phase === 'planning'
+  const [plannerW, executorW, observerW] = panelWidths(panelFocus, observerExpanded)
+  const workflowActive = state.phase !== 'idle'
 
   return (
-    <div className="flex h-screen flex-col bg-surface-900">
-      {/* Reconnecting banner */}
-      <AnimatePresence>
-        {reconnecting && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="overflow-hidden bg-executor/10 px-6 py-1.5 text-center"
-          >
-            <span className="font-mono text-xs text-executor">
-              ⟳ Reconnecting to stream...
-            </span>
-          </motion.div>
-        )}
-      </AnimatePresence>
+    // Full bleed dark canvas
+    <div className="flex h-screen overflow-hidden bg-surface-950 text-white">
 
-      {/* Top nav */}
-      <header className="flex items-center justify-between border-b border-surface-600 px-6 py-3">
-        <div className="flex items-center gap-3">
-          <h1 className="font-display text-lg font-bold tracking-tight text-gray-100">
-            ZBOT
-          </h1>
-          <div className="flex gap-1">
-            <span className="h-1.5 w-1.5 rounded-full bg-planner" />
-            <span className="h-1.5 w-1.5 rounded-full bg-executor" />
-            <span className="h-1.5 w-1.5 rounded-full bg-green-400" />
-          </div>
-          {allWorkflowIDs.length > 0 && (
-            <span className="font-mono text-xs text-gray-500">
-              active workflows: {allWorkflowIDs.length}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-4">
-          {state.phase !== 'idle' && (
-            <span className="font-mono text-xs text-gray-500">
-              workflow: {state.id.slice(0, 8)}
-            </span>
-          )}
-          <button
-            onClick={() => setWorkspaceOpen(true)}
-            className="rounded p-1 font-mono text-xs text-gray-500 transition-colors hover:bg-surface-700 hover:text-violet-400"
-            title="Workspace files"
-          >
-            📁
-          </button>
-          <button
-            onClick={() => setMemoryOpen(true)}
-            className="rounded p-1 font-mono text-xs text-gray-500 transition-colors hover:bg-surface-700 hover:text-amber-400"
-            title="Memory panel"
-          >
-            🧠
-          </button>
-          <a href="/workflows" className="font-mono text-xs text-gray-500 transition-colors hover:text-gray-300">
-            history
-          </a>
-          <a href="/audit" className="font-mono text-xs text-gray-500 transition-colors hover:text-gray-300">
-            audit
-          </a>
-        </div>
-      </header>
-
-      {/* Command Bar */}
-      <div className="border-b border-surface-600 px-6 py-4">
-        <CommandBar
-          onSubmit={(goal) => void handleSubmit(goal)}
-          onChat={(msg) => void handleChat(msg)}
-          isPlanning={isPlanning}
-          isChatting={isChatting}
-        />
-      </div>
-
-      {/* Metrics strip */}
-      <div className="border-b border-surface-700">
-        <MetricsStrip metrics={metrics} />
-      </div>
-
-      {/* Main content area */}
-      <div className="relative flex flex-1 overflow-hidden">
-        {quickChatMode ? (
-          /* Quick Chat Mode — full width */
-          <motion.div
-            className="flex-1 overflow-y-auto p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-          >
-            <div className="mx-auto max-w-2xl space-y-4">
-              {chatMessages.map((msg, i) => (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className={`rounded-lg border p-4 ${
-                    msg.role === 'user'
-                      ? 'border-surface-600 bg-surface-800'
-                      : 'border-amber-500/20 bg-amber-500/5'
-                  }`}
-                >
-                  <div className="mb-1 font-mono text-[10px] text-gray-600">
-                    {msg.role === 'user' ? 'You' : 'ZBOT'}
-                  </div>
-                  <div className="whitespace-pre-wrap font-mono text-xs text-gray-200">
-                    {msg.content}
-                  </div>
-                </motion.div>
-              ))}
-              {isChatting && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
-                >
-                  <div className="mb-1 font-mono text-[10px] text-gray-600">ZBOT</div>
-                  <div className="font-mono text-xs text-amber-400 animate-pulse">Thinking...</div>
-                </motion.div>
-              )}
-              <div ref={chatEndRef} />
-              {chatMessages.length === 0 && !isChatting && (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                  <span className="text-2xl opacity-40">💬</span>
-                  <p className="mt-3 font-mono text-xs text-gray-600">
-                    Type a message to chat with ZBOT — memory-aware across sessions
-                  </p>
-                  <p className="mt-1 font-mono text-[10px] text-gray-700">
-                    Use &quot;plan: your goal&quot; to switch to dual-brain mode
-                  </p>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        ) : (
-          /* Dual Brain Mode — split screen */
-          <>
-            <AnimatePresence>
-              {/* Left: Planner */}
-              <motion.div
-                className="flex w-1/2 flex-col p-4 max-md:w-full"
-                initial={{ opacity: 0 }}
-                animate={{
-                  opacity: state.phase === 'handoff' || state.phase === 'executing' || state.phase === 'complete' ? 0.7 : 1,
-                }}
-                transition={{ duration: 0.5 }}
-              >
-                <PlannerPanel
-                  tokens={state.plannerTokens}
-                  tasks={state.plannedTasks}
-                  phase={state.phase}
-                />
-              </motion.div>
-
-              {/* Divider */}
-              <div className="w-px bg-surface-600 max-md:hidden" />
-
-              {/* Right: Executor */}
-              <motion.div
-                className="flex w-1/2 flex-col p-4 max-md:w-full"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.3 }}
-              >
-                <ExecutorPanel tasks={state.tasks} phase={state.phase} onViewFile={handleViewFile} />
-              </motion.div>
-            </AnimatePresence>
-
-            {/* Handoff animation overlay */}
-            <HandoffAnimation active={showHandoff} onComplete={handleHandoffComplete} />
-          </>
-        )}
-      </div>
-
-      {/* Bottom history bar */}
-      <div className="border-t border-surface-600">
-        <WorkflowHistory activeID={state.id} onSelect={handleSelectWorkflow} />
-      </div>
-
-      {/* Output file preview drawer */}
-      <OutputPreview filePath={previewFile} onClose={() => setPreviewFile(null)} />
-
-      {/* Memory panel (Sprint 12) */}
-      <MemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} />
-
-      {/* Workspace panel (Sprint 13) */}
-      <WorkspacePanel
-        open={workspaceOpen}
-        onClose={() => setWorkspaceOpen(false)}
-        onPreview={(path) => {
-          setWsPreviewFile(path)
-          setWorkspaceOpen(false)
+      {/* Collapsible icon sidebar */}
+      <Sidebar
+        activePage={activePage}
+        onNavigate={(page) => {
+          if (page === 'memory')    { setMemoryOpen(true);   return }
+          if (page === 'schedules') { setScheduleOpen(true); return }
+          if (page === 'research')  { setResearchOpen(true); return }
+          setActivePage(page)
         }}
+        workflowActive={workflowActive}
       />
 
-      {/* File preview drawer (Sprint 13) */}
-      <FilePreviewDrawer
-        filePath={wsPreviewFile}
-        onClose={() => setWsPreviewFile(null)}
-      />
+      {/* Main column */}
+      <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+
+        {/* Reconnect banner — minimal */}
+        <AnimatePresence>
+          {reconnecting && (
+            <motion.div
+              initial={{ height: 0 }} animate={{ height: 32 }} exit={{ height: 0 }}
+              className="flex items-center justify-center overflow-hidden bg-anthropic/10 border-b border-anthropic/20"
+            >
+              <span className="font-mono text-[11px] text-anthropic/80">
+                <motion.span animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.2, repeat: Infinity }}>⟳</motion.span>
+                {' '}Reconnecting to event stream
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Top chrome: command bar + metrics — tight */}
+        <div className="shrink-0 border-b border-white/[0.04] bg-surface-900/60 backdrop-blur-sm">
+          <div className="px-4 py-2.5">
+            <CommandBar
+              onSubmit={(goal) => void handleSubmit(goal)}
+              onChat={() => setActivePage('workflows')}
+              onResearch={() => setResearchOpen(true)}
+              isPlanning={state.phase === 'planning'}
+              isChatting={false}
+            />
+          </div>
+          <MetricsStrip metrics={metrics} />
+        </div>
+
+        {/* Pages */}
+        <div className="relative flex flex-1 min-h-0 overflow-hidden">
+          <AnimatePresence mode="wait">
+
+            {activePage === 'dashboard' && (
+              <motion.div key="dash" className="absolute inset-0 overflow-auto"
+                initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.15 }}>
+                <DashboardPage onNavigate={(p) => setActivePage(p as NavPage)} />
+              </motion.div>
+            )}
+
+            {activePage === 'workflows' && (
+              <motion.div key="wf" className="absolute inset-0 flex gap-2 p-2.5"
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                transition={{ duration: 0.1 }}>
+
+                {/* GPT-4o Planner */}
+                <motion.div
+                  className="flex min-w-0 flex-col"
+                  animate={{ width: plannerW }}
+                  transition={{ type: 'spring', damping: 26, stiffness: 220 }}
+                  onClick={() => setPanelFocus('planner')}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <PlannerPanel tokens={state.plannerTokens} tasks={state.plannedTasks} phase={state.phase} />
+                </motion.div>
+
+                {/* Claude Executor */}
+                <motion.div
+                  className="flex min-w-0 flex-col"
+                  animate={{ width: executorW }}
+                  transition={{ type: 'spring', damping: 26, stiffness: 220 }}
+                  onClick={() => setPanelFocus('executor')}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <ExecutorPanel tasks={state.tasks} phase={state.phase} onViewFile={setPreviewFile} />
+                </motion.div>
+
+                {/* Observer (Claude) */}
+                <motion.div
+                  className="flex min-w-0 flex-col"
+                  animate={{ width: observerW }}
+                  transition={{ type: 'spring', damping: 26, stiffness: 220 }}
+                  onClick={() => setPanelFocus('observer')}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <ObserverPanel
+                    workflowState={state}
+                    activeTask={activeTask}
+                    isExpanded={observerExpanded}
+                    onExpandToggle={() => setObserverExpanded((v) => !v)}
+                  />
+                </motion.div>
+
+                <HandoffAnimation active={showHandoff} onComplete={handleHandoffComplete} />
+              </motion.div>
+            )}
+
+            {activePage === 'knowledge' && (
+              <motion.div key="kb" className="absolute inset-0 overflow-auto"
+                initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.15 }}>
+                <KnowledgeBasePage />
+              </motion.div>
+            )}
+
+          </AnimatePresence>
+        </div>
+      </div>
+
+      {/* Drawers */}
+      <OutputPreview filePath={previewFile} onClose={() => setPreviewFile(null)} />
+      <MemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} />
+      <WorkspacePanel open={workspaceOpen} onClose={() => setWorkspaceOpen(false)} onPreview={(path) => { setWsPreviewFile(path); setWorkspaceOpen(false) }} />
+      <FilePreviewDrawer filePath={wsPreviewFile} onClose={() => setWsPreviewFile(null)} />
+      <SchedulePanel open={scheduleOpen} onClose={() => setScheduleOpen(false)} />
+      <ResearchPanel open={researchOpen} onClose={() => setResearchOpen(false)} />
     </div>
   )
 }

@@ -273,16 +273,10 @@ func buildUserParam(msg agent.Message) anthropic.MessageParam {
 	}
 	for i := 0; i < imageCount; i++ {
 		img := msg.Images[i]
-		blocks = append(blocks, anthropic.ContentBlockParamUnion{
-			OfImage: &anthropic.ImageBlockParam{
-				Source: anthropic.ImageBlockParamSourceUnion{
-					OfBase64: &anthropic.Base64ImageSourceParam{
-						MediaType: mediaTypeToSDK(img.MediaType),
-						Data:      base64.StdEncoding.EncodeToString(img.Data),
-					},
-				},
-			},
-		})
+		blocks = append(blocks, anthropic.NewImageBlockBase64(
+			string(mediaTypeToSDK(img.MediaType)),
+			base64.StdEncoding.EncodeToString(img.Data),
+		))
 	}
 
 	// Add text content block.

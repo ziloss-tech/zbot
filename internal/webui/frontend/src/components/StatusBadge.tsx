@@ -5,34 +5,33 @@ interface StatusBadgeProps {
   size?: 'sm' | 'md'
 }
 
-const statusConfig: Record<string, { bg: string; text: string; pulse: boolean }> = {
-  pending: { bg: 'bg-surface-600', text: 'text-gray-400', pulse: false },
-  running: { bg: 'bg-executor/20', text: 'text-executor', pulse: true },
-  planning: { bg: 'bg-planner/20', text: 'text-planner', pulse: true },
-  done: { bg: 'bg-green-500/20', text: 'text-green-400', pulse: false },
-  failed: { bg: 'bg-red-500/20', text: 'text-red-400', pulse: false },
-  canceled: { bg: 'bg-gray-500/20', text: 'text-gray-500', pulse: false },
-  complete: { bg: 'bg-green-500/20', text: 'text-green-400', pulse: false },
-  error: { bg: 'bg-red-500/20', text: 'text-red-400', pulse: false },
+const statusConfig: Record<string, { dot: string; text: string; label: string; pulse: boolean }> = {
+  pending:  { dot: 'bg-white/20',    text: 'text-white/30',   label: 'pending',   pulse: false },
+  planning: { dot: 'bg-openai',      text: 'text-openai/80',  label: 'planning',  pulse: true  },
+  running:  { dot: 'bg-anthropic',   text: 'text-anthropic/80', label: 'running', pulse: true  },
+  handoff:  { dot: 'bg-observer',    text: 'text-observer/80', label: 'handoff',  pulse: true  },
+  done:     { dot: 'bg-openai',      text: 'text-openai/70',  label: 'done',      pulse: false },
+  complete: { dot: 'bg-openai',      text: 'text-openai/70',  label: 'done',      pulse: false },
+  failed:   { dot: 'bg-red-400',     text: 'text-red-400/80', label: 'failed',    pulse: false },
+  canceled: { dot: 'bg-white/20',    text: 'text-white/25',   label: 'canceled',  pulse: false },
+  error:    { dot: 'bg-red-400',     text: 'text-red-400/80', label: 'error',     pulse: false },
 }
 
 export function StatusBadge({ status, size = 'sm' }: StatusBadgeProps) {
-  const config = statusConfig[status] ?? statusConfig['pending']!
-  const sizeClass = size === 'sm' ? 'text-xs px-2 py-0.5' : 'text-sm px-3 py-1'
+  const cfg = statusConfig[status] ?? statusConfig['pending']!
+  const px = size === 'sm' ? 'px-1.5 py-px' : 'px-2.5 py-1'
+  const textSize = size === 'sm' ? 'text-[9px]' : 'text-[11px]'
 
   return (
-    <motion.span
-      className={`inline-flex items-center gap-1.5 rounded-full font-mono font-medium ${config.bg} ${config.text} ${sizeClass}`}
-      animate={config.pulse ? { opacity: [1, 0.6, 1] } : undefined}
-      transition={config.pulse ? { duration: 2, repeat: Infinity } : undefined}
-    >
-      {config.pulse && (
-        <span className="relative flex h-2 w-2">
-          <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${config.bg} opacity-75`} />
-          <span className={`relative inline-flex h-2 w-2 rounded-full ${status === 'running' ? 'bg-executor' : 'bg-planner'}`} />
-        </span>
-      )}
-      {status}
-    </motion.span>
+    <span className={`inline-flex items-center gap-1.5 rounded-full border border-white/[0.06] bg-white/[0.04] ${px}`}>
+      <motion.span
+        className={`h-1 w-1 rounded-full shrink-0 ${cfg.dot}`}
+        animate={cfg.pulse ? { opacity: [1, 0.2, 1] } : undefined}
+        transition={cfg.pulse ? { duration: 1.4, repeat: Infinity } : undefined}
+      />
+      <span className={`font-mono font-medium uppercase tracking-widest ${cfg.text} ${textSize}`}>
+        {cfg.label}
+      </span>
+    </span>
   )
 }

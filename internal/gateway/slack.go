@@ -4,11 +4,13 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -228,10 +230,34 @@ func (g *SlackGateway) downloadFiles(ctx context.Context, files []slack.File) []
 			continue
 		}
 
-		// Download using the bot token for authorization.
-		data, err := g.downloadFile(ctx, f.URLPrivateDownload)
+		// Prefer URLPrivateDownload; fall back to URLPrivate.
+		dlURL := f.URLPrivateDownload
+		if dlURL == "" {
+			dlURL = f.URLPrivate
+		}
+		if dlURL == "" {
+			g.logger.Error("no download URL for file", "name", f.Name)
+			continue
+		}
+
+		g.logger.Info("downloading file", "name", f.Name, "type", f.Mimetype, "url_source", func() string {
+			if f.URLPrivateDownload != "" {
+				return "URLPrivateDownload"
+			}
+			return "URLPrivate"
+		}())
+
+		// Download using the Slack SDK (handles auth correctly).
+		data, err := g.downloadFileSDK(ctx, dlURL)
 		if err != nil {
 			g.logger.Error("file download failed", "name", f.Name, "err", err)
+			continue
+		}
+
+		// Validate that the downloaded bytes look like the claimed type.
+		if !validImageMagic(data, f.Mimetype) {
+			g.logger.Error("downloaded data does not match claimed type — may be an HTML error page",
+				"name", f.Name, "claimed_type", f.Mimetype, "first_bytes", fmt.Sprintf("%x", data[:min(16, len(data))]))
 			continue
 		}
 
@@ -241,7 +267,7 @@ func (g *SlackGateway) downloadFiles(ctx context.Context, files []slack.File) []
 			Filename:  f.Name,
 		})
 
-		g.logger.Info("file downloaded", "name", f.Name, "type", f.Mimetype, "size", len(data))
+		g.logger.Info("file downloaded OK", "name", f.Name, "type", f.Mimetype, "size", len(data))
 	}
 
 	return attachments
@@ -276,5 +302,85 @@ func (g *SlackGateway) downloadFile(ctx context.Context, url string) ([]byte, er
 	return data, nil
 }
 
+// downloadFileSDK uses the Slack SDK's built-in GetFileContext which handles
+// auth correctly (including token refresh / cookie auth that raw HTTP misses).
+func (g *SlackGateway) downloadFileSDK(ctx context.Context, url string) ([]byte, error) {
+	var buf bytes.Buffer
+	err := g.client.GetFileContext(ctx, url, &buf)
+	if err != nil {
+		return nil, fmt.Errorf("slack.GetFile: %w", err)
+	}
+	if buf.Len() > maxFileSize {
+		return nil, fmt.Errorf("file exceeds 20MB limit")
+	}
+	return buf.Bytes(), nil
+}
+
+// SendScheduledResult sends a formatted Slack message for a completed scheduled job.
+// Sprint 14: Proactive scheduling Slack notifications.
+func (g *SlackGateway) SendScheduledResult(ctx context.Context, channelID, jobName, summary string, taskCount int, durationSec int, files []string) error {
+	// Build formatted message.
+	msg := fmt.Sprintf("🤖 *Scheduled: %s*\n", jobName)
+	msg += fmt.Sprintf("_Ran at %s", timeNowFormatted())
+
+	if taskCount > 0 {
+		msg += fmt.Sprintf(" • %d tasks", taskCount)
+	}
+	if durationSec > 0 {
+		if durationSec < 60 {
+			msg += fmt.Sprintf(" • %ds", durationSec)
+		} else {
+			msg += fmt.Sprintf(" • %dm%ds", durationSec/60, durationSec%60)
+		}
+	}
+	msg += "_\n\n"
+
+	if summary != "" {
+		msg += summary + "\n"
+	}
+
+	if len(files) > 0 {
+		msg += "\n"
+		for _, f := range files {
+			msg += fmt.Sprintf("📄 `%s`\n", f)
+		}
+	}
+
+	msg += "\n[View in ZBOT UI](http://localhost:18790)"
+
+	_, _, err := g.client.PostMessageContext(ctx, channelID,
+		slack.MsgOptionText(msg, false),
+	)
+	return err
+}
+
+// timeNowFormatted returns the current time as "3:04 PM".
+func timeNowFormatted() string {
+	return time.Now().Format("3:04 PM")
+}
+
 // Ensure SlackGateway implements agent.Gateway.
 var _ agent.Gateway = (*SlackGateway)(nil)
+
+// validImageMagic checks that downloaded bytes start with the magic bytes
+// expected for the claimed MIME type. Catches cases where Slack returns an
+// HTML error page instead of actual image data.
+func validImageMagic(data []byte, mimeType string) bool {
+	if len(data) < 4 {
+		return false
+	}
+	switch mimeType {
+	case "image/jpeg":
+		return data[0] == 0xFF && data[1] == 0xD8 // JPEG SOI
+	case "image/png":
+		return data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 // ‰PNG
+	case "image/gif":
+		return data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 // GIF
+	case "image/webp":
+		return len(data) >= 12 && data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 // RIFF
+	case "application/pdf":
+		return data[0] == 0x25 && data[1] == 0x50 && data[2] == 0x44 && data[3] == 0x46 // %PDF
+	default:
+		return true // unknown type, let it through
+	}
+}

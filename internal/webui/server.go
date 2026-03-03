@@ -12,14 +12,24 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jeremylerwick-max/zbot/internal/agent"
 	"github.com/jeremylerwick-max/zbot/internal/planner"
+	"github.com/jeremylerwick-max/zbot/internal/research"
+	"github.com/jeremylerwick-max/zbot/internal/scheduler"
 	"github.com/jeremylerwick-max/zbot/internal/workflow"
 )
+
+// ResearchSlackNotifier sends a Slack message when deep research completes.
+type ResearchSlackNotifier interface {
+	Send(ctx context.Context, channelID, content string) error
+}
 
 //go:embed static/*
 var staticFiles embed.FS
 
 // QuickChatFunc handles non-plan messages with memory context.
 type QuickChatFunc func(ctx context.Context, message string) (string, error)
+
+// PersistentChatFunc calls Claude with full conversation history.
+type PersistentChatFunc func(ctx context.Context, history []ChatMessage, message string) (string, error)
 
 // Server serves the ZBOT web dashboard on loopback only.
 type Server struct {
@@ -32,6 +42,16 @@ type Server struct {
 	orch      *workflow.Orchestrator
 	memStore  agent.MemoryStore // Sprint 12: memory panel + quick chat
 	quickChat QuickChatFunc     // Sprint 12: memory-aware quick chat handler
+	sched     *scheduler.Scheduler // Sprint 14: scheduler for schedule panel
+	jobStore  scheduler.JobStore   // Sprint 14: direct DB access for schedule API
+	llmClient agent.LLMClient      // Sprint 14: for ParseSchedule NL→cron
+	researchOrch    *research.ResearchOrchestrator // Deep Research: multi-agent pipeline
+	researchStore   *research.PGResearchStore     // Deep Research: session persistence
+	slackNotifier   ResearchSlackNotifier         // Deep Research: Slack notify on completion
+	notifyChannelID string                        // Deep Research: channel/DM to notify
+	// Sprint 20: Persistent Claude chat (Slack ↔ UI).
+	chatStore      *ChatStore
+	persistentChat PersistentChatFunc
 }
 
 // New creates a web UI server on port 18790.
@@ -65,6 +85,40 @@ func (s *Server) SetMemoryStore(mem agent.MemoryStore) {
 // SetQuickChat sets the handler for memory-aware quick chat messages.
 func (s *Server) SetQuickChat(fn QuickChatFunc) {
 	s.quickChat = fn
+}
+
+// SetScheduler sets the scheduler for the schedule panel API.
+func (s *Server) SetScheduler(sc *scheduler.Scheduler, store scheduler.JobStore) {
+	s.sched = sc
+	s.jobStore = store
+}
+
+// SetLLMClient sets the LLM client for NL→cron parsing.
+func (s *Server) SetLLMClient(c agent.LLMClient) {
+	s.llmClient = c
+}
+
+// SetResearch sets the deep research orchestrator and store.
+func (s *Server) SetResearch(orch *research.ResearchOrchestrator, store *research.PGResearchStore) {
+	s.researchOrch = orch
+	s.researchStore = store
+}
+
+// SetSlackNotifier wires up Slack DM notification when research completes.
+func (s *Server) SetSlackNotifier(n ResearchSlackNotifier, channelID string) {
+	s.slackNotifier = n
+	s.notifyChannelID = channelID
+	s.logger.Info("research Slack notifier wired", "channel", channelID)
+}
+
+// SetChatStore wires the persistent chat store (Sprint 20).
+func (s *Server) SetChatStore(cs *ChatStore) {
+	s.chatStore = cs
+}
+
+// SetPersistentChat wires the Claude chat function with history (Sprint 20).
+func (s *Server) SetPersistentChat(fn PersistentChatFunc) {
+	s.persistentChat = fn
 }
 
 // Hub returns the SSE hub for external event publishing (e.g., from orchestrator).
@@ -105,8 +159,30 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/workspace/preview", s.handleWorkspacePreviewAPI)
 	s.mux.HandleFunc("/api/workspace/file", s.handleWorkspaceDeleteAPI)
 
+	// Sprint 14 — Schedule API.
+	s.mux.HandleFunc("/api/schedule", s.handleScheduleCreateAPI)
+	s.mux.HandleFunc("/api/schedules", s.handleScheduleListAPI)
+	s.mux.HandleFunc("/api/schedule/", s.handleScheduleActionAPI)
+
+	// Sprint 14 — Monitor API.
+	s.mux.HandleFunc("/api/monitor", s.handleMonitorCreateAPI)
+	s.mux.HandleFunc("/api/monitors", s.handleMonitorListAPI)
+	s.mux.HandleFunc("/api/monitor/", s.handleMonitorDeleteAPI)
+
+	// Deep Research API.
+	s.mux.HandleFunc("/api/research", s.handleResearchCreateAPI)
+	s.mux.HandleFunc("/api/research/list", s.handleResearchListAPI)
+	s.mux.HandleFunc("/api/research/", s.handleResearchDetailAPI)
+	s.mux.HandleFunc("/api/research/stream/", s.handleResearchStreamAPI)
+	s.mux.HandleFunc("/api/research/budget", s.handleResearchBudgetAPI)
+
 	// Sprint 12 — Quick Chat API.
 	s.mux.HandleFunc("/api/chat", s.handleQuickChatAPI)
+
+	// Sprint 20 — Persistent Claude Chat.
+	s.mux.HandleFunc("/api/claude/chat", s.handleClaudeChatAPI)
+	s.mux.HandleFunc("/api/claude/history", s.handleClaudeHistoryAPI)
+	s.mux.HandleFunc("/api/claude/stream", s.handleClaudeStreamAPI)
 
 	// Index — serve React app for command center (falls through to static for /app),
 	// or redirect to old dashboard for non-API paths.
