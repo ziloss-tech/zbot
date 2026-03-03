@@ -35,6 +35,7 @@ import (
 	skillSearch "github.com/jeremylerwick-max/zbot/internal/skills/search"
 	skillSheets "github.com/jeremylerwick-max/zbot/internal/skills/sheets"
 	"github.com/jeremylerwick-max/zbot/internal/research"
+	"github.com/jeremylerwick-max/zbot/internal/security"
 	"github.com/jeremylerwick-max/zbot/internal/tools"
 	"github.com/jeremylerwick-max/zbot/internal/webui"
 	"github.com/jeremylerwick-max/zbot/internal/workflow"
@@ -537,6 +538,13 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		)
 
 		trimmed := strings.TrimSpace(text)
+
+		// ── Sprint 9: Prompt injection detection + sanitization ──────────
+		if security.IsLikelyInjection(trimmed, logger, sessionID, userID) {
+			// Log and sanitize — still process the message but strip injection patterns.
+			trimmed = security.SanitizeInput(trimmed)
+			text = trimmed
+		}
 
 		// ── Sprint 17: Route slash commands first ─────────────────────────
 		if reply, handled := cmdHandler.Handle(ctx, sessionID, trimmed); handled {
