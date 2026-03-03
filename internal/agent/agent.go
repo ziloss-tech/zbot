@@ -58,12 +58,24 @@ func DefaultConfig() Config {
 // Agent is the core agent. It is stateless between turns —
 // all state lives in the stores passed at construction.
 type Agent struct {
-	cfg     Config
-	llm     LLMClient
-	memory  MemoryStore
-	tools   map[string]Tool
-	audit   AuditLogger
-	logger  *slog.Logger
+	cfg          Config
+	llm          LLMClient
+	memory       MemoryStore
+	tools        map[string]Tool
+	audit        AuditLogger
+	logger       *slog.Logger
+	confirmStore *security.ConfirmationStore // Sprint 9: destructive op confirmation
+}
+
+// SetConfirmationStore wires the confirmation gate for destructive tool calls.
+func (a *Agent) SetConfirmationStore(cs *security.ConfirmationStore) {
+	a.confirmStore = cs
+}
+
+// GetTool returns a tool by name, for direct execution (e.g. after confirmation).
+func (a *Agent) GetTool(name string) (Tool, bool) {
+	t, ok := a.tools[name]
+	return t, ok
 }
 
 // New constructs an Agent. All dependencies are injected as interfaces.
@@ -306,6 +318,27 @@ func (a *Agent) executeTools(
 				ToolCallID: call.ID,
 				Content:    fmt.Sprintf("validation error: %v", valErr),
 				IsError:    true,
+			})
+			continue
+		}
+
+		// Sprint 9: Destructive operation confirmation gate.
+		if a.confirmStore != nil && security.IsDestructive(call.Name) {
+			preview := security.FormatPreview(call.Name, call.Input)
+			a.confirmStore.SetPending(sessionID, &security.PendingAction{
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Input:      call.Input,
+				Preview:    preview,
+			})
+			a.logger.Info("destructive tool requires confirmation",
+				"tool", call.Name,
+				"session", sessionID,
+			)
+			results = append(results, ToolResult{
+				ToolCallID: call.ID,
+				Content:    fmt.Sprintf("⚠️ This action requires your confirmation before I execute it:\n\n%s\n\nReply *yes* to confirm or *no* to cancel.", preview),
+				IsError:    false,
 			})
 			continue
 		}
