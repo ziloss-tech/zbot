@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jeremylerwick-max/zbot/internal/agent"
@@ -72,7 +74,7 @@ func (s *PGWorkflowStore) CreateWorkflow(ctx context.Context, tasks []agent.Task
 // Returns nil (no error) when there are no available tasks.
 func (s *PGWorkflowStore) ClaimNextTask(ctx context.Context, workerID string) (*agent.Task, error) {
 	row := s.db.QueryRow(ctx, `
-		UPDATE zbot_tasks SET status = 'running', claimed_by = $1, updated_at = NOW()
+		UPDATE zbot_tasks SET status = 'running', worker_id = $1, claimed_at = NOW(), updated_at = NOW()
 		WHERE id = (
 			SELECT t.id FROM zbot_tasks t
 			WHERE t.status = 'pending'
@@ -91,8 +93,10 @@ func (s *PGWorkflowStore) ClaimNextTask(ctx context.Context, workerID string) (*
 
 	t, err := scanTask(row)
 	if err != nil {
-		// pgx returns pgx.ErrNoRows when nothing to claim — that's normal.
-		return nil, nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil // no tasks available — normal
+		}
+		return nil, fmt.Errorf("ClaimNextTask scan: %w", err)
 	}
 	return t, nil
 }
