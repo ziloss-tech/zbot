@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/jeremylerwick-max/zbot/internal/security"
 )
 
 // ─── Model Hint Context ─────────────────────────────────────────────────────
@@ -292,6 +294,22 @@ func (a *Agent) executeTools(
 		}
 
 		invoked[call.Name] = struct{}{}
+
+		// Sprint 9: Validate tool inputs before execution.
+		if valErr := security.ValidateToolInput(call.Name, call.Input); valErr != nil {
+			a.logger.Warn("tool input validation failed",
+				"tool", call.Name,
+				"session", sessionID,
+				"err", valErr,
+			)
+			results = append(results, ToolResult{
+				ToolCallID: call.ID,
+				Content:    fmt.Sprintf("validation error: %v", valErr),
+				IsError:    true,
+			})
+			continue
+		}
+
 		execStart := time.Now()
 
 		result, err := tool.Execute(ctx, call.Input)
