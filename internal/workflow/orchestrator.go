@@ -214,10 +214,17 @@ func (o *Orchestrator) runTask(ctx context.Context, workerID string, task *agent
 		instruction = fmt.Sprintf("%s\n\n## Input from Previous Step\n%s", instruction, upstreamContent)
 	}
 
+	// Pick model tier: final step gets "smart" (Sonnet), middle steps get "cheap" (Haiku).
+	modelHint := "cheap"
+	if o.isFinalTask(ctx, task) {
+		modelHint = "smart"
+	}
+
 	input := agent.TurnInput{
 		SessionID:  fmt.Sprintf("workflow-%s-task-%s", task.WorkflowID, task.ID),
 		WorkflowID: task.WorkflowID,
 		TaskID:     task.ID,
+		ModelHint:  modelHint,
 		UserMsg: agent.Message{
 			Role:    agent.RoleUser,
 			Content: instruction,
@@ -426,6 +433,23 @@ func (o *Orchestrator) Cancel(ctx context.Context, workflowID string) error {
 // Store returns the underlying WorkflowStore (used by the planner to submit pre-built task graphs).
 func (o *Orchestrator) Store() agent.WorkflowStore {
 	return o.store
+}
+
+// isFinalTask returns true if no other task in the workflow depends on this one.
+// Final tasks get the "smart" (Sonnet) model for high-quality synthesis.
+func (o *Orchestrator) isFinalTask(ctx context.Context, task *agent.Task) bool {
+	tasks, err := o.store.GetWorkflowStatus(ctx, task.WorkflowID)
+	if err != nil {
+		return false // default to cheap on error
+	}
+	for _, t := range tasks {
+		for _, dep := range t.DependsOn {
+			if dep == task.ID {
+				return false // something depends on us — not final
+			}
+		}
+	}
+	return true
 }
 
 // autoSaveWorkflowInsights extracts key facts from workflow results and saves them to memory.
