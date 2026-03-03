@@ -140,6 +140,7 @@ func (c *Client) Complete(ctx context.Context, messages []agent.Message, tools [
 	// 6. Parse response into domain types.
 	result := &agent.CompletionResult{
 		StopReason:   string(resp.StopReason),
+		Model:        model,
 		InputTokens:  int(resp.Usage.InputTokens),
 		OutputTokens: int(resp.Usage.OutputTokens),
 	}
@@ -201,6 +202,7 @@ func (c *Client) CompleteStream(ctx context.Context, messages []agent.Message, t
 func (c *Client) pickModel(ctx context.Context, messages []agent.Message) string {
 	// Priority 1: Context hint from orchestrator/caller.
 	hint := agent.ModelHintFromCtx(ctx)
+	c.logger.Debug("pickModel", "hint", hint, "default", c.model)
 	switch hint {
 	case "cheap":
 		return ModelHaiku
