@@ -109,8 +109,8 @@ func (c *Client) Complete(ctx context.Context, messages []agent.Message, tools [
 		})
 	}
 
-	// 3. Pick model based on message content (model router).
-	model := c.pickModel(messages)
+	// 3. Pick model based on context hint, message content, or default.
+	model := c.pickModel(ctx, messages)
 
 	// 4. Build request params.
 	params := anthropic.MessageNewParams{
@@ -191,11 +191,30 @@ func (c *Client) CompleteStream(ctx context.Context, messages []agent.Message, t
 
 // ─── MODEL ROUTER ───────────────────────────────────────────────────────────
 
-// pickModel selects the appropriate model based on message content.
-//   - /think flag → Opus (deep reasoning)
-//   - Simple short messages → Haiku (fast, cheap)
-//   - Default → Sonnet (balanced)
-func (c *Client) pickModel(messages []agent.Message) string {
+// pickModel selects the appropriate model based on:
+//  1. Context hint (set by orchestrator for workflow routing)
+//  2. Message content (/think flag, simple messages)
+//  3. Default model
+//
+// Hint values: "cheap" → Haiku, "smart" → Sonnet, "opus" → Opus,
+// or a specific model name like "claude-haiku-4-5-20251001".
+func (c *Client) pickModel(ctx context.Context, messages []agent.Message) string {
+	// Priority 1: Context hint from orchestrator/caller.
+	hint := agent.ModelHintFromCtx(ctx)
+	switch hint {
+	case "cheap":
+		return ModelHaiku
+	case "smart":
+		return ModelSonnet
+	case "opus":
+		return ModelOpus
+	case "":
+		// no hint — fall through to content-based routing
+	default:
+		// specific model name passed directly
+		return hint
+	}
+
 	if len(messages) == 0 {
 		return c.model
 	}

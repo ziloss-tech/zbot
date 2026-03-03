@@ -10,6 +10,22 @@ import (
 	"time"
 )
 
+// ─── Model Hint Context ─────────────────────────────────────────────────────
+
+type ctxKeyModelHint struct{}
+
+// WithModelHint attaches a model routing hint to the context.
+// Used by the LLM client's pickModel to override default selection.
+func WithModelHint(ctx context.Context, hint string) context.Context {
+	return context.WithValue(ctx, ctxKeyModelHint{}, hint)
+}
+
+// ModelHintFromCtx reads the model hint from context (empty = use default).
+func ModelHintFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyModelHint{}).(string)
+	return v
+}
+
 // Config holds the agent's runtime configuration.
 // All sensitive values (API keys) come via SecretsManager — never here.
 type Config struct {
@@ -76,6 +92,7 @@ type TurnInput struct {
 	SessionID  string
 	WorkflowID string // set when this turn is part of a workflow task
 	TaskID     string // set when this turn is part of a workflow task
+	ModelHint  string // optional model override: "cheap", "smart", "opus", or specific model name
 	History    []Message // conversation history (caller manages this)
 	UserMsg    Message   // the new incoming message
 }
@@ -111,6 +128,11 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		logArgs = append(logArgs, "workflow_id", input.WorkflowID, "task_id", input.TaskID)
 	}
 	a.logger.Info("agent turn start", logArgs...)
+
+	// 0. Inject model hint into context if set.
+	if input.ModelHint != "" {
+		ctx = WithModelHint(ctx, input.ModelHint)
+	}
 
 	// 1. Load relevant memories for this message.
 	facts, err := a.memory.Search(ctx, input.UserMsg.Content, a.cfg.MemorySearchLimit)
