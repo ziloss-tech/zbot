@@ -307,6 +307,10 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		allTools...,
 	)
 
+	// Sprint 9: Wire confirmation store for destructive operation gates.
+	confirmStore := security.NewConfirmationStore()
+	ag.SetConfirmationStore(confirmStore)
+
 	// ── Workflow Engine (Sprint 5) ───────────────────────────────────────────
 	var orch *workflow.Orchestrator
 	if pgDB != nil {
@@ -544,6 +548,30 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			// Log and sanitize — still process the message but strip injection patterns.
 			trimmed = security.SanitizeInput(trimmed)
 			text = trimmed
+		}
+
+		// ── Sprint 9: Handle pending destructive operation confirmations ──
+		if confirmStore.HasPending(sessionID) {
+			if security.IsConfirmation(trimmed) {
+				pending := confirmStore.GetPending(sessionID)
+				if pending != nil {
+					tool, ok := ag.GetTool(pending.ToolName)
+					if ok {
+						result, execErr := tool.Execute(ctx, pending.Input)
+						if execErr != nil {
+							return fmt.Sprintf("❌ Execution failed: %v", execErr), nil
+						}
+						return fmt.Sprintf("✅ Executed *%s*:\n%s", pending.ToolName, result.Content), nil
+					}
+					return "❌ Tool no longer available.", nil
+				}
+			}
+			if security.IsCancellation(trimmed) {
+				confirmStore.GetPending(sessionID) // clear it
+				return "🚫 Action cancelled.", nil
+			}
+			// If neither confirm nor cancel, clear pending and process normally.
+			confirmStore.GetPending(sessionID)
 		}
 
 		// ── Sprint 17: Route slash commands first ─────────────────────────
