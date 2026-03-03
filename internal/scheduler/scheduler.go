@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -9,14 +10,20 @@ import (
 
 // Job is a scheduled task.
 type Job struct {
-	ID          string
-	Name        string
-	CronExpr    string    // standard cron: "0 8 * * 1" = every Monday 8am
-	Instruction string    // what to tell the agent when it fires
-	SessionID   string    // which Slack session to reply to
-	NextRun     time.Time
-	Active      bool
-	CreatedAt   time.Time
+	ID              string
+	Name            string
+	Goal            string    // Sprint 14: full goal text for the planner
+	CronExpr        string    // standard cron: "0 8 * * 1" = every Monday 8am
+	NaturalSchedule string    // Sprint 14: human-readable schedule ("every morning at 8am")
+	Instruction     string    // what to tell the agent when it fires (legacy — use Goal for planner)
+	SessionID       string    // which Slack session to reply to
+	Status          string    // active, paused, running
+	NextRun         time.Time
+	LastRun         *time.Time // Sprint 14: last execution time
+	RunCount        int       // Sprint 14: total execution count
+	Active          bool      // legacy compat — derived from Status
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // Handler is called when a scheduled job fires.
@@ -70,9 +77,13 @@ func (s *Scheduler) Add(ctx context.Context, job Job) error {
 	}
 	job.NextRun = NextCronTime(parsed, time.Now())
 	job.Active = true
+	if job.Status == "" {
+		job.Status = "active"
+	}
 	if job.CreatedAt.IsZero() {
 		job.CreatedAt = time.Now()
 	}
+	job.UpdatedAt = time.Now()
 
 	if err := s.store.Save(ctx, job); err != nil {
 		return err
@@ -89,6 +100,89 @@ func (s *Scheduler) Add(ctx context.Context, job Job) error {
 		"next_run", job.NextRun.Format(time.RFC3339),
 	)
 	return nil
+}
+
+// Pause pauses a job by ID.
+func (s *Scheduler) Pause(ctx context.Context, id string) error {
+	s.mu.Lock()
+	j, ok := s.jobs[id]
+	if ok {
+		j.Status = "paused"
+		j.Active = false
+		j.UpdatedAt = time.Now()
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("job %q not found", id)
+	}
+	return s.store.UpdateStatus(ctx, id, "paused")
+}
+
+// Resume resumes a paused job.
+func (s *Scheduler) Resume(ctx context.Context, id string) error {
+	s.mu.Lock()
+	j, ok := s.jobs[id]
+	if ok {
+		j.Status = "active"
+		j.Active = true
+		j.UpdatedAt = time.Now()
+		// Recompute next run from now.
+		parsed, err := ParseCron(j.CronExpr)
+		if err == nil {
+			j.NextRun = NextCronTime(parsed, time.Now())
+			_ = s.store.UpdateNextRun(ctx, id, j.NextRun)
+		}
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("job %q not found", id)
+	}
+	return s.store.UpdateStatus(ctx, id, "active")
+}
+
+// Get returns a single job by ID.
+func (s *Scheduler) Get(id string) (Job, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	j, ok := s.jobs[id]
+	if !ok {
+		return Job{}, false
+	}
+	return *j, true
+}
+
+// FireNow immediately fires a job using the handler. Runs in current goroutine.
+func (s *Scheduler) FireNow(ctx context.Context, job Job) {
+	instruction := job.Goal
+	if instruction == "" {
+		instruction = job.Instruction
+	}
+
+	s.logger.Info("scheduled job fired (manual)",
+		"id", job.ID,
+		"name", job.Name,
+	)
+
+	s.handler(ctx, job.SessionID, instruction)
+
+	// Update run tracking.
+	s.mu.Lock()
+	if live, ok := s.jobs[job.ID]; ok {
+		live.Status = "active"
+		nowDone := time.Now()
+		live.LastRun = &nowDone
+		live.RunCount++
+
+		parsed, err := ParseCron(live.CronExpr)
+		if err == nil {
+			live.NextRun = NextCronTime(parsed, nowDone)
+			_ = s.store.UpdateNextRun(ctx, live.ID, live.NextRun)
+		}
+		_ = s.store.MarkRunComplete(ctx, live.ID, nowDone, live.RunCount)
+	}
+	s.mu.Unlock()
 }
 
 // Remove deletes a job by ID.
@@ -136,26 +230,47 @@ func (s *Scheduler) fireDue(ctx context.Context) {
 
 	now := time.Now()
 	for _, job := range s.jobs {
-		if !job.Active || now.Before(job.NextRun) {
+		if job.Status == "paused" || job.Status == "running" || !job.Active || now.Before(job.NextRun) {
 			continue
 		}
 
-		s.logger.Info("scheduler: firing job",
+		s.logger.Info("scheduled job fired",
 			"id", job.ID,
 			"name", job.Name,
+			"cron", job.CronExpr,
 		)
+
+		// Mark as running to prevent double-fire.
+		job.Status = "running"
+		_ = s.store.UpdateStatus(ctx, job.ID, "running")
 
 		// Fire asynchronously so we don't block the tick loop.
 		j := job
-		go s.handler(ctx, j.SessionID, j.Instruction)
+		go func() {
+			// Use Goal for planner-based execution, fall back to Instruction.
+			instruction := j.Goal
+			if instruction == "" {
+				instruction = j.Instruction
+			}
+			s.handler(ctx, j.SessionID, instruction)
 
-		// Compute next run.
-		parsed, err := ParseCron(job.CronExpr)
-		if err != nil {
-			s.logger.Error("scheduler: bad cron on fire", "id", job.ID, "err", err)
-			continue
-		}
-		job.NextRun = NextCronTime(parsed, now)
-		_ = s.store.UpdateNextRun(ctx, job.ID, job.NextRun)
+			// After completion: update run tracking.
+			s.mu.Lock()
+			if live, ok := s.jobs[j.ID]; ok {
+				live.Status = "active"
+				nowDone := time.Now()
+				live.LastRun = &nowDone
+				live.RunCount++
+
+				// Compute next run.
+				parsed, err := ParseCron(live.CronExpr)
+				if err == nil {
+					live.NextRun = NextCronTime(parsed, nowDone)
+					_ = s.store.UpdateNextRun(ctx, live.ID, live.NextRun)
+				}
+				_ = s.store.MarkRunComplete(ctx, live.ID, nowDone, live.RunCount)
+			}
+			s.mu.Unlock()
+		}()
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/jeremylerwick-max/zbot/internal/planner"
+	"github.com/jeremylerwick-max/zbot/internal/research"
+	"github.com/jeremylerwick-max/zbot/internal/scheduler"
 )
 
 // ─── SSE STREAM ──────────────────────────────────────────────────────────────
@@ -1067,4 +1069,877 @@ func parseInt(s string) int {
 		}
 	}
 	return n
+}
+
+// ─── SPRINT 14: SCHEDULE API ────────────────────────────────────────────────
+
+type scheduleCreateRequest struct {
+	Name            string `json:"name"`
+	Goal            string `json:"goal"`
+	NaturalSchedule string `json:"natural_schedule"`
+}
+
+type scheduleJobResponse struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Goal            string  `json:"goal"`
+	CronExpr        string  `json:"cron_expr"`
+	NaturalSchedule string  `json:"natural_schedule"`
+	Status          string  `json:"status"`
+	NextRun         string  `json:"next_run"`
+	LastRun         *string `json:"last_run"`
+	RunCount        int     `json:"run_count"`
+	CreatedAt       string  `json:"created_at"`
+}
+
+func jobToResponse(j scheduler.Job) scheduleJobResponse {
+	resp := scheduleJobResponse{
+		ID:              j.ID,
+		Name:            j.Name,
+		Goal:            j.Goal,
+		CronExpr:        j.CronExpr,
+		NaturalSchedule: j.NaturalSchedule,
+		Status:          j.Status,
+		NextRun:         j.NextRun.Format(time.RFC3339),
+		RunCount:        j.RunCount,
+		CreatedAt:       j.CreatedAt.Format(time.RFC3339),
+	}
+	if j.LastRun != nil {
+		lr := j.LastRun.Format(time.RFC3339)
+		resp.LastRun = &lr
+	}
+	if resp.Status == "" {
+		if j.Active {
+			resp.Status = "active"
+		} else {
+			resp.Status = "paused"
+		}
+	}
+	return resp
+}
+
+// POST /api/schedule — create a new scheduled job.
+func (s *Server) handleScheduleCreateAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.sched == nil || s.jobStore == nil {
+		http.Error(w, "scheduler not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req scheduleCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Goal == "" {
+		http.Error(w, "goal is required", http.StatusBadRequest)
+		return
+	}
+	if req.NaturalSchedule == "" {
+		http.Error(w, "natural_schedule is required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse natural language schedule to cron expression.
+	if s.llmClient == nil {
+		http.Error(w, "LLM not available for schedule parsing", http.StatusServiceUnavailable)
+		return
+	}
+	cronExpr, err := scheduler.ParseSchedule(r.Context(), s.llmClient, req.NaturalSchedule)
+	if err != nil {
+		http.Error(w, "failed to parse schedule: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Compute next run.
+	nextRun, err := scheduler.NextCronTimeFromExpr(cronExpr, time.Now())
+	if err != nil {
+		http.Error(w, "invalid cron: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Generate ID.
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	id := hex.EncodeToString(b)
+
+	name := req.Name
+	if name == "" {
+		// Auto-generate name from goal.
+		name = req.Goal
+		if len(name) > 60 {
+			name = name[:60] + "..."
+		}
+	}
+
+	job := scheduler.Job{
+		ID:              id,
+		Name:            name,
+		Goal:            req.Goal,
+		CronExpr:        cronExpr,
+		NaturalSchedule: req.NaturalSchedule,
+		Instruction:     req.Goal,
+		Status:          "active",
+		NextRun:         nextRun,
+		Active:          true,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+
+	if err := s.sched.Add(r.Context(), job); err != nil {
+		http.Error(w, "failed to create job: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(jobToResponse(job))
+}
+
+// GET /api/schedules — list all scheduled jobs.
+func (s *Server) handleScheduleListAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.jobStore == nil {
+		http.Error(w, "scheduler not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	jobs, err := s.jobStore.LoadAll(r.Context())
+	if err != nil {
+		http.Error(w, "failed to load jobs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	result := make([]scheduleJobResponse, 0, len(jobs))
+	for _, j := range jobs {
+		result = append(result, jobToResponse(j))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleScheduleActionAPI routes schedule sub-actions:
+// PUT  /api/schedule/:id/pause
+// PUT  /api/schedule/:id/resume
+// DELETE /api/schedule/:id
+// POST /api/schedule/:id/run
+func (s *Server) handleScheduleActionAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "PUT, DELETE, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if s.sched == nil || s.jobStore == nil {
+		http.Error(w, "scheduler not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Parse: /api/schedule/:id or /api/schedule/:id/action
+	path := strings.TrimPrefix(r.URL.Path, "/api/schedule/")
+	parts := strings.SplitN(path, "/", 2)
+	id := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	if id == "" {
+		http.Error(w, "missing job ID", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	switch {
+	case r.Method == http.MethodPut && action == "pause":
+		if err := s.sched.Pause(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "paused"})
+
+	case r.Method == http.MethodPut && action == "resume":
+		if err := s.sched.Resume(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "active"})
+
+	case r.Method == http.MethodDelete:
+		if err := s.sched.Remove(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+
+	case r.Method == http.MethodPost && action == "run":
+		// Run now — fire the job immediately.
+		job, ok := s.sched.Get(id)
+		if !ok {
+			http.Error(w, "job not found", http.StatusNotFound)
+			return
+		}
+		// Fire in background via the scheduler's handler.
+		go func() {
+			ctx := context.Background()
+			instruction := job.Goal
+			if instruction == "" {
+				instruction = job.Instruction
+			}
+			// Mark running.
+			_ = s.jobStore.UpdateStatus(ctx, id, "running")
+
+			// Use the scheduler's handler directly.
+			s.sched.FireNow(ctx, job)
+		}()
+		json.NewEncoder(w).Encode(map[string]string{"status": "triggered"})
+
+	default:
+		http.Error(w, "unknown action", http.StatusBadRequest)
+	}
+}
+
+// ─── SPRINT 14: MONITOR API ─────────────────────────────────────────────────
+
+type monitorCreateRequest struct {
+	Name                 string `json:"name"`
+	URL                  string `json:"url"`
+	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+	NotifyOnChange       string `json:"notify_on_change"`
+}
+
+type monitorResponse struct {
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	URL                  string `json:"url"`
+	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+	NotifyOnChange       string `json:"notify_on_change"`
+	Active               bool   `json:"active"`
+	CreatedAt            string `json:"created_at"`
+}
+
+// POST /api/monitor — start watching a URL.
+func (s *Server) handleMonitorCreateAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Need pgJobStore to be a *PGJobStore for monitor methods.
+	pgStore, ok := s.jobStore.(*scheduler.PGJobStore)
+	if !ok || pgStore == nil {
+		http.Error(w, "monitor store not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req monitorCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.URL == "" {
+		http.Error(w, "url is required", http.StatusBadRequest)
+		return
+	}
+	if req.CheckIntervalMinutes <= 0 {
+		req.CheckIntervalMinutes = 60
+	}
+
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	id := hex.EncodeToString(b)
+
+	entry := scheduler.MonitorEntry{
+		ID:                   id,
+		Name:                 req.Name,
+		URL:                  req.URL,
+		CheckIntervalMinutes: req.CheckIntervalMinutes,
+		NotifyOnChange:       req.NotifyOnChange,
+		Active:               true,
+		CreatedAt:            time.Now(),
+	}
+
+	if err := pgStore.SaveMonitor(r.Context(), entry); err != nil {
+		http.Error(w, "failed to save monitor: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(monitorResponse{
+		ID:                   entry.ID,
+		Name:                 entry.Name,
+		URL:                  entry.URL,
+		CheckIntervalMinutes: entry.CheckIntervalMinutes,
+		NotifyOnChange:       entry.NotifyOnChange,
+		Active:               entry.Active,
+		CreatedAt:            entry.CreatedAt.Format(time.RFC3339),
+	})
+}
+
+// GET /api/monitors — list active monitors.
+func (s *Server) handleMonitorListAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	pgStore, ok := s.jobStore.(*scheduler.PGJobStore)
+	if !ok || pgStore == nil {
+		http.Error(w, "monitor store not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	monitors, err := pgStore.LoadMonitors(r.Context())
+	if err != nil {
+		http.Error(w, "failed to load monitors: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	result := make([]monitorResponse, 0, len(monitors))
+	for _, m := range monitors {
+		result = append(result, monitorResponse{
+			ID:                   m.ID,
+			Name:                 m.Name,
+			URL:                  m.URL,
+			CheckIntervalMinutes: m.CheckIntervalMinutes,
+			NotifyOnChange:       m.NotifyOnChange,
+			Active:               m.Active,
+			CreatedAt:            m.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(result)
+}
+
+// DELETE /api/monitor/:id — stop watching a URL.
+func (s *Server) handleMonitorDeleteAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	pgStore, ok := s.jobStore.(*scheduler.PGJobStore)
+	if !ok || pgStore == nil {
+		http.Error(w, "monitor store not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/monitor/")
+	if id == "" {
+		http.Error(w, "missing monitor ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := pgStore.DeleteMonitor(r.Context(), id); err != nil {
+		http.Error(w, "failed to delete monitor: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+}
+
+// ─── DEEP RESEARCH API ──────────────────────────────────────────────────────
+
+type researchCreateRequest struct {
+	Goal string `json:"goal"`
+}
+
+type researchSessionResponse struct {
+	ID              string  `json:"id"`
+	Goal            string  `json:"goal"`
+	Status          string  `json:"status"`
+	Iterations      int     `json:"iterations"`
+	ConfidenceScore float64 `json:"confidence_score"`
+	FinalReport     string  `json:"final_report,omitempty"`
+	CostUSD         float64 `json:"cost_usd"`
+	Error           string  `json:"error,omitempty"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+}
+
+func sessionToResponse(s research.ResearchSession) researchSessionResponse {
+	return researchSessionResponse{
+		ID:              s.ID,
+		Goal:            s.Goal,
+		Status:          s.Status,
+		Iterations:      s.Iterations,
+		ConfidenceScore: s.ConfidenceScore,
+		FinalReport:     s.FinalReport,
+		CostUSD:         s.CostUSD,
+		Error:           s.Error,
+		CreatedAt:       s.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:       s.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+// POST /api/research — start a deep research session.
+// Returns 202 Accepted immediately — research runs in a background goroutine.
+func (s *Server) handleResearchCreateAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.researchOrch == nil {
+		http.Error(w, "deep research not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req researchCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Goal == "" {
+		http.Error(w, "goal is required", http.StatusBadRequest)
+		return
+	}
+
+	// Generate session ID.
+	b := make([]byte, 12)
+	_, _ = rand.Read(b)
+	sessionID := "res_" + hex.EncodeToString(b)
+
+	// Persist the session as "running" in Postgres.
+	if s.researchStore != nil {
+		if err := s.researchStore.CreateSession(r.Context(), sessionID, req.Goal); err != nil {
+			s.logger.Error("failed to create research session", "err", err)
+			http.Error(w, "failed to create session: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Run in background goroutine — returns 202 immediately.
+	go func() {
+		ctx := context.Background()
+		state, err := s.researchOrch.RunDeepResearch(ctx, req.Goal, sessionID)
+		if err != nil {
+			s.logger.Error("deep research failed",
+				"session_id", sessionID,
+				"err", err,
+			)
+			if s.researchStore != nil {
+				_ = s.researchStore.FailSession(ctx, sessionID, err.Error())
+			}
+			return
+		}
+
+		if s.researchStore != nil {
+			_ = s.researchStore.CompleteSession(ctx, sessionID, state.FinalReport, state)
+		}
+
+		s.logger.Info("deep research completed",
+			"session_id", sessionID,
+			"iterations", state.Iteration,
+			"cost", fmt.Sprintf("$%.4f", state.CostUSD),
+		)
+
+		// ── Slack notification ───────────────────────────────────────────
+		s.logger.Info("research notify check",
+			"notifier_nil", s.slackNotifier == nil,
+			"channel", s.notifyChannelID,
+		)
+		if s.slackNotifier != nil && s.notifyChannelID != "" {
+			goal := req.Goal
+			if len(goal) > 80 {
+				goal = goal[:80] + "..."
+			}
+			msg := fmt.Sprintf("🔬 *Deep Research Complete*\n_%s_\n\n", goal)
+			msg += fmt.Sprintf("*Confidence:* %.0f%% | *Iterations:* %d | *Sources:* %d | *Cost:* $%.4f\n\n",
+				state.Critique.ConfidenceScore*100,
+				state.Iteration,
+				len(state.Sources),
+				state.CostUSD,
+			)
+			// Preview: first 400 chars of the final report.
+			preview := state.FinalReport
+			if len(preview) > 400 {
+				preview = preview[:400] + "..."
+			}
+			msg += preview + "\n\n"
+			msg += fmt.Sprintf("<http://localhost:18790|View full report in ZBOT UI>")
+			if notifyErr := s.slackNotifier.Send(ctx, s.notifyChannelID, msg); notifyErr != nil {
+				s.logger.Error("research Slack notification failed", "err", notifyErr)
+			} else {
+				s.logger.Info("research Slack notification sent", "channel", s.notifyChannelID)
+			}
+		}
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{
+		"session_id": sessionID,
+		"status":     "running",
+		"message":    "Deep research started — use /api/research/stream/" + sessionID + " for live updates.",
+	})
+}
+
+// GET /api/research/list — list recent research sessions.
+func (s *Server) handleResearchListAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.researchStore == nil {
+		http.Error(w, "research store not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	limit := 20
+	if l := parseInt(r.URL.Query().Get("limit")); l > 0 && l <= 100 {
+		limit = l
+	}
+
+	sessions, err := s.researchStore.ListSessions(r.Context(), limit)
+	if err != nil {
+		http.Error(w, "failed to list sessions: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	result := make([]researchSessionResponse, 0, len(sessions))
+	for _, sess := range sessions {
+		result = append(result, sessionToResponse(sess))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(result)
+}
+
+// GET /api/research/:id — get a single research session detail.
+func (s *Server) handleResearchDetailAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.researchStore == nil {
+		http.Error(w, "research store not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/research/")
+	// Strip sub-paths like /api/research/:id/anything.
+	if idx := strings.Index(id, "/"); idx >= 0 {
+		id = id[:idx]
+	}
+	if id == "" {
+		http.Error(w, "missing session ID", http.StatusBadRequest)
+		return
+	}
+
+	sess, err := s.researchStore.GetSession(r.Context(), id)
+	if err != nil {
+		http.Error(w, "session not found: "+err.Error(), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(sessionToResponse(*sess))
+}
+
+// GET /api/research/stream/:id — SSE stream for live research progress.
+func (s *Server) handleResearchStreamAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.researchOrch == nil {
+		http.Error(w, "research not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/research/stream/")
+	if id == "" {
+		http.Error(w, "missing session ID", http.StatusBadRequest)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	flusher.Flush()
+
+	// Get the emitter for this session.
+	emitter := s.researchOrch.GetEmitter(id)
+	if emitter == nil {
+		// Session may have already finished — send a done event.
+		fmt.Fprintf(w, "data: {\"stage\":\"done\",\"message\":\"Session not active — may have already completed.\"}\n\n")
+		flusher.Flush()
+		return
+	}
+
+	ping := time.NewTicker(15 * time.Second)
+	defer ping.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case evt, ok := <-emitter.Events():
+			if !ok {
+				// Emitter closed — research complete.
+				fmt.Fprintf(w, "data: {\"stage\":\"stream_end\"}\n\n")
+				flusher.Flush()
+				return
+			}
+			data, _ := json.Marshal(evt)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		case <-ping.C:
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// GET /api/research/budget — today's spend and daily limit.
+func (s *Server) handleResearchBudgetAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	resp := map[string]any{
+		"daily_limit_usd": research.DailyBudgetUSD,
+		"today_spent_usd": 0.0,
+		"sessions_today":  0,
+		"remaining_usd":   research.DailyBudgetUSD,
+	}
+
+	if s.researchStore != nil {
+		totalCost, sessionCount, err := s.researchStore.GetDailyStats(r.Context())
+		if err == nil {
+			resp["today_spent_usd"] = totalCost
+			resp["sessions_today"] = sessionCount
+			resp["remaining_usd"] = research.DailyBudgetUSD - totalCost
+		}
+	}
+
+	json.NewEncoder(w).Encode(resp)
+}
+
+// ─── Sprint 20: PERSISTENT CLAUDE CHAT API ───────────────────────────────────
+
+// handleClaudeChatAPI handles POST /api/claude/chat
+// Saves user message, calls Claude with full history, saves reply, broadcasts SSE.
+func (s *Server) handleClaudeChatAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.chatStore == nil || s.persistentChat == nil {
+		http.Error(w, "chat not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Message string `json:"message"`
+		Source  string `json:"source"` // "ui" | "slack"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.Message == "" {
+		http.Error(w, "message required", http.StatusBadRequest)
+		return
+	}
+	if req.Source == "" {
+		req.Source = "ui"
+	}
+
+	ctx := r.Context()
+
+	// Load conversation history (last 40 messages).
+	history, err := s.chatStore.History(ctx, 40)
+	if err != nil {
+		s.logger.Error("chat history load failed", "err", err)
+		history = nil
+	}
+
+	// Save user message first.
+	userMsg := ChatMessage{
+		ID:        newChatID(),
+		Role:      "user",
+		Content:   req.Message,
+		Source:    req.Source,
+		CreatedAt: time.Now().UTC(),
+	}
+	if saveErr := s.chatStore.Save(ctx, userMsg); saveErr != nil {
+		s.logger.Error("failed to save user message", "err", saveErr)
+	}
+
+	// Broadcast user message via SSE.
+	s.hub.Publish(Event{
+		WorkflowID: "claude_chat",
+		Source:     "user",
+		Type:       "chat_message",
+		Payload:    chatMsgJSON(userMsg),
+	})
+
+	// Call Claude with full history.
+	reply, err := s.persistentChat(ctx, history, req.Message)
+	if err != nil {
+		s.logger.Error("persistent chat failed", "err", err)
+		http.Error(w, "claude error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Save assistant reply.
+	assistantMsg := ChatMessage{
+		ID:        newChatID(),
+		Role:      "assistant",
+		Content:   reply,
+		Source:    "claude",
+		CreatedAt: time.Now().UTC(),
+	}
+	if saveErr := s.chatStore.Save(ctx, assistantMsg); saveErr != nil {
+		s.logger.Error("failed to save assistant message", "err", saveErr)
+	}
+
+	// Broadcast assistant message via SSE.
+	s.hub.Publish(Event{
+		WorkflowID: "claude_chat",
+		Source:     "claude",
+		Type:       "chat_message",
+		Payload:    chatMsgJSON(assistantMsg),
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(map[string]any{
+		"user_message":  userMsg,
+		"reply_message": assistantMsg,
+	})
+}
+
+// handleClaudeHistoryAPI handles GET /api/claude/history
+func (s *Server) handleClaudeHistoryAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if s.chatStore == nil {
+		json.NewEncoder(w).Encode(map[string]any{"messages": []ChatMessage{}})
+		return
+	}
+
+	limit := 100
+	history, err := s.chatStore.History(r.Context(), limit)
+	if err != nil {
+		s.logger.Error("chat history load failed", "err", err)
+		json.NewEncoder(w).Encode(map[string]any{"messages": []ChatMessage{}})
+		return
+	}
+	if history == nil {
+		history = []ChatMessage{}
+	}
+	json.NewEncoder(w).Encode(map[string]any{"messages": history})
+}
+
+// handleClaudeStreamAPI handles GET /api/claude/stream
+// SSE stream for live chat messages.
+func (s *Server) handleClaudeStreamAPI(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	flusher.Flush()
+
+	// Subscribe to claude_chat SSE events.
+	ch, unsub := s.hub.Subscribe("claude_chat")
+	defer unsub()
+
+	ping := time.NewTicker(20 * time.Second)
+	defer ping.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case evt := <-ch:
+			if evt.Type == "chat_message" {
+				fmt.Fprintf(w, "data: %s\n\n", evt.Payload)
+				flusher.Flush()
+			}
+		case <-ping.C:
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// chatMsgJSON serializes a ChatMessage to JSON string for SSE payload.
+func chatMsgJSON(msg ChatMessage) string {
+	b, _ := json.Marshal(msg)
+	return string(b)
 }

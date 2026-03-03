@@ -77,7 +77,6 @@ func (t *WebSearchTool) Execute(ctx context.Context, input map[string]any) (*age
 		return nil, fmt.Errorf("web_search: build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("X-Subscription-Token", t.apiKey)
 
 	resp, err := t.httpClient.Do(req)

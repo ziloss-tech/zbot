@@ -276,6 +276,7 @@ func (s *Store) AutoSave(ctx context.Context, sessionID, content string) {
 		ID:        fmt.Sprintf("%s-%d", sessionID, time.Now().UnixMilli()),
 		Content:   content,
 		Source:    "conversation",
+		Tags:      []string{},
 		CreatedAt: time.Now(),
 	}
 

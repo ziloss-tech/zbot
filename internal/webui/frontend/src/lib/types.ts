@@ -83,6 +83,60 @@ export interface Metrics {
   cost_today: string
 }
 
+// ─── Sprint 14: Schedule Types ──────────────────────────────────────────────
+
+export interface ScheduledJob {
+  id: string
+  name: string
+  goal: string
+  cron_expr: string
+  natural_schedule: string
+  status: 'active' | 'paused' | 'running'
+  next_run: string
+  last_run?: string | null
+  run_count: number
+  created_at: string
+}
+
+// ─── Deep Research Types ─────────────────────────────────────────────────────
+
+export interface ResearchEvent {
+  session_id: string
+  stage: 'planning' | 'searching' | 'extracting' | 'critiquing' | 'evaluated' | 'synthesizing' | 'complete' | 'error' | 'stream_end' | 'done'
+  iteration: number
+  model: string
+  model_id: string
+  message: string
+  confidence: number
+  passed: boolean
+  sources: number
+  claims: number
+  report: string
+  cost_usd: number
+  error: string
+  timestamp: string
+}
+
+export interface ResearchSession {
+  id: string
+  goal: string
+  status: 'running' | 'complete' | 'failed'
+  iterations: number
+  confidence_score: number
+  final_report: string
+  cost_usd: number
+  error: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ResearchBudget {
+  daily_limit_usd: number
+  today_spent_usd: number
+  sessions_today: number
+  remaining_usd: number
+}
+
 // ─── UI State ────────────────────────────────────────────────────────────────
 
 export type WorkflowPhase = 'idle' | 'planning' | 'handoff' | 'executing' | 'complete' | 'error'
