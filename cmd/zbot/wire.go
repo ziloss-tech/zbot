@@ -336,6 +336,8 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	var sched *scheduler.Scheduler
 	var schedJobStore scheduler.JobStore
 	var schedRunner *scheduler.Runner
+	// Forward reference: set when slackGW is created so scheduler can send replies.
+	var slackSendFn func(ctx context.Context, channelID, text string) error
 	if pgDB != nil {
 		jobStore, jsErr := scheduler.NewPGJobStore(ctx, pgDB)
 		if jsErr != nil {
@@ -364,6 +366,18 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 					return
 				}
 				logger.Info("scheduled job complete", "session", sessionID, "reply_len", len(reply.Reply))
+				// Send reply to Slack (if wired).
+				if slackSendFn != nil && reply.Reply != "" {
+					msg := fmt.Sprintf("⏰ *Scheduled task complete:*\n%s", reply.Reply)
+					logger.Info("scheduled job sending to Slack", "session", sessionID, "msg_len", len(msg))
+					if sendErr := slackSendFn(ctx, sessionID, msg); sendErr != nil {
+						logger.Error("scheduled job: Slack send failed", "session", sessionID, "err", sendErr)
+					} else {
+						logger.Info("scheduled job: Slack send OK", "session", sessionID)
+					}
+				} else {
+					logger.Warn("scheduled job: slackSendFn not wired or empty reply", "fn_nil", slackSendFn == nil, "reply_empty", reply.Reply == "")
+				}
 			}
 			sched = scheduler.New(jobStore, schedHandler, logger)
 			sched.Start(ctx)
@@ -992,6 +1006,7 @@ If no, respond with JSON: {"save": false}`, message, reply)
 	)
 
 	// Wire Slack notifier for research completions and scheduled jobs.
+	slackSendFn = slackGW.Send
 	// allowedUserID is the DM channel to post to (Slack DM channel = user ID).
 	if allowedUserID != "" && allowedUserID != "PENDING" {
 		if webServer != nil {

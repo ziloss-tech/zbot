@@ -38,7 +38,7 @@ const modeConfig = {
   plan:     { accent: 'text-openai',    border: 'border-openai/30',    glow: 'shadow-openai',   label: 'plan',     icon: '▸', placeholder: 'Describe what you want GPT-4o + Claude to build...' },
   research: { accent: 'text-gemini',    border: 'border-gemini/30',    glow: 'shadow-gemini',   label: 'research', icon: '◎', placeholder: 'Deep research topic — pulls sources, synthesizes, reports...' },
   schedule: { accent: 'text-observer',  border: 'border-observer/30',  glow: 'shadow-observer', label: 'schedule', icon: '◷', placeholder: 'every morning at 9am check AI news...' },
-  chat:     { accent: 'text-white/40',  border: 'border-white/[0.08]', glow: '',                label: '',         icon: '',  placeholder: '⌘K to focus · plan: · research: · schedule:' },
+  chat:     { accent: 'text-white/40',  border: 'border-white/[0.08]', glow: '',                label: '',         icon: '',  placeholder: '⌘K to focus · Type a goal or use plan: · research: · schedule:' },
 }
 
 export function CommandBar({ onSubmit, onChat, onResearch, isPlanning, isChatting }: CommandBarProps) {
@@ -85,7 +85,8 @@ export function CommandBar({ onSubmit, onChat, onResearch, isPlanning, isChattin
       const goal = trimmed.replace(/^plan:\s*/i, '')
       if (goal) { onSubmit(goal); setValue('') }
     } else {
-      onChat(trimmed)
+      // Default: treat as a plan (natural language goal)
+      onSubmit(trimmed)
       setValue('')
     }
   }
