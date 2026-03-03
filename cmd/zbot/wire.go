@@ -575,7 +575,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 				}
 				sb.WriteString(fmt.Sprintf("*%d. %s*%s%s\n_%s_\n\n", t.Priority, t.Title, parallel, deps, truncateStr(t.Instruction, 120)))
 			}
-			sb.WriteString(fmt.Sprintf("🚀 Workflow `%s` started — Claude is on it.\nTrack progress: `/status %s`", wfID, wfID))
+			sb.WriteString(fmt.Sprintf("🚀 Workflow `%s` started — Claude is on it.\nTrack progress: `//status %s`", wfID, wfID))
 
 			return sb.String(), nil
 		}
@@ -624,6 +624,35 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			return "❌ Workflow engine not available — Postgres required.", nil
 		}
 
+		// ── //status <workflow_id> — check workflow progress ─────────────
+		if strings.HasPrefix(trimmed, "//status ") && orch != nil {
+			wfID := strings.TrimSpace(strings.TrimPrefix(trimmed, "//status "))
+			tasks, err := orch.Status(ctx, wfID)
+			if err != nil {
+				return fmt.Sprintf("❌ Could not get workflow status: %v", err), nil
+			}
+			if len(tasks) == 0 {
+				return fmt.Sprintf("No tasks found for workflow `%s`.", wfID), nil
+			}
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("📋 *Workflow `%s`* — %d tasks:\n", wfID, len(tasks)))
+			for _, t := range tasks {
+				icon := "⏳"
+				switch t.Status {
+				case agent.TaskDone:
+					icon = "✅"
+				case agent.TaskRunning:
+					icon = "🔄"
+				case agent.TaskFailed:
+					icon = "❌"
+				case agent.TaskCanceled:
+					icon = "🚫"
+				}
+				sb.WriteString(fmt.Sprintf("%s Step %d: %s — _%s_\n", icon, t.Step, t.Name, t.Status))
+			}
+			return sb.String(), nil
+		}
+
 		// ── /workflow <instruction> — submit a multi-step workflow ────────────
 		if (strings.HasPrefix(trimmed, "//workflow ") || isWorkflowRequest(trimmed)) && orch != nil {
 			instruction := trimmed
@@ -634,7 +663,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			if err != nil {
 				return fmt.Sprintf("❌ Failed to start workflow: %v", err), nil
 			}
-			return fmt.Sprintf("🚀 Workflow `%s` started — use `/status %s` to check progress.", wfID, wfID), nil
+			return fmt.Sprintf("🚀 Workflow `%s` started — use `//status %s` to check progress.", wfID, wfID), nil
 		}
 
 		// ── /schedule <cron> | <instruction> — add a scheduled job ───────────

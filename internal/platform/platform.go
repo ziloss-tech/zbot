@@ -146,8 +146,9 @@ func ParseTaskGraph(raw string) ([]agent.Task, error) {
 	tasks := make([]agent.Task, len(graph.Tasks))
 	now := time.Now()
 
+	prefix := fmt.Sprintf("%x", time.Now().UnixMilli())
 	for i, t := range graph.Tasks {
-		id := fmt.Sprintf("task-%d", i+1)
+		id := fmt.Sprintf("%s-task-%d", prefix, i+1)
 		nameToID[t.Name] = id
 		tasks[i] = agent.Task{
 			ID: id, Step: i + 1, Name: t.Name,
