@@ -39,3 +39,7 @@ logs/
 # Temp
 tmp/
 .tmp/
+
+# Binaries
+/zbot-bin
+/memcli
