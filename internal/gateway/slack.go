@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/slack-go/slack"
@@ -18,6 +19,58 @@ import (
 
 	"github.com/jeremylerwick-max/zbot/internal/agent"
 )
+
+// ─── Per-User Rate Limiter ───────────────────────────────────────────────────
+
+// rateBucket tracks a user's message allowance.
+type rateBucket struct {
+	tokens     float64
+	lastRefill time.Time
+}
+
+// userRateLimiter enforces max 10 messages per minute per user.
+// Uses a token bucket per user ID. In-memory — resets on restart.
+type userRateLimiter struct {
+	mu         sync.Mutex
+	buckets    map[string]*rateBucket
+	maxTokens  float64
+	refillRate float64 // tokens per second
+}
+
+func newUserRateLimiter() *userRateLimiter {
+	return &userRateLimiter{
+		buckets:    make(map[string]*rateBucket),
+		maxTokens:  10,
+		refillRate: 10.0 / 60.0, // 10 tokens per 60 seconds
+	}
+}
+
+// Allow returns true if the user has capacity, consuming one token.
+func (rl *userRateLimiter) Allow(userID string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	b, ok := rl.buckets[userID]
+	if !ok {
+		b = &rateBucket{tokens: rl.maxTokens, lastRefill: now}
+		rl.buckets[userID] = b
+	}
+
+	// Refill tokens based on elapsed time.
+	elapsed := now.Sub(b.lastRefill).Seconds()
+	b.tokens += elapsed * rl.refillRate
+	if b.tokens > rl.maxTokens {
+		b.tokens = rl.maxTokens
+	}
+	b.lastRefill = now
+
+	if b.tokens >= 1 {
+		b.tokens--
+		return true
+	}
+	return false
+}
 
 // Attachment holds file data downloaded from Slack.
 type Attachment struct {
@@ -35,6 +88,7 @@ type SlackGateway struct {
 	allowedUsers map[string]bool // only these Slack user IDs can trigger ZBOT
 	handler      MessageHandler
 	logger       *slog.Logger
+	rateLimiter  *userRateLimiter // Sprint 9: per-user rate limiting
 }
 
 // MessageHandler is called when a valid DM arrives.
@@ -69,6 +123,7 @@ func NewSlackGateway(
 		allowedUsers: allowed,
 		handler:      handler,
 		logger:       logger,
+		rateLimiter:  newUserRateLimiter(),
 	}
 }
 
@@ -170,6 +225,13 @@ func (g *SlackGateway) handleEventsAPI(ctx context.Context, event slackevents.Ev
 		// Enforce allowlist — only permitted users can trigger ZBOT.
 		if len(g.allowedUsers) > 0 && !g.allowedUsers[msgEvent.User] {
 			g.logger.Warn("message from non-allowed user", "user", msgEvent.User)
+			return
+		}
+
+		// Sprint 9: Per-user rate limiting — max 10 messages/minute.
+		if !g.rateLimiter.Allow(msgEvent.User) {
+			g.logger.Warn("rate limit exceeded", "user", msgEvent.User)
+			g.Send(context.Background(), msgEvent.Channel, "⏳ You're sending messages too fast. Please wait a moment.")
 			return
 		}
 
