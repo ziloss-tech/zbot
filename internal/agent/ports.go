@@ -109,9 +109,10 @@ type LLMClient interface {
 
 // CompletionResult holds the model's response.
 type CompletionResult struct {
-	Content   string
-	ToolCalls []ToolCall
-	StopReason string
+	Content      string
+	ToolCalls    []ToolCall
+	StopReason   string
+	Model        string // actual model used (may differ from default due to routing)
 	InputTokens  int
 	OutputTokens int
 }

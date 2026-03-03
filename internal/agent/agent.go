@@ -163,7 +163,11 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 			return nil, fmt.Errorf("agent.Run llm.Complete round=%d: %w", round, err)
 		}
 
-		a.audit.LogModelCall(ctx, input.SessionID, a.llm.ModelName(),
+		modelUsed := result.Model
+		if modelUsed == "" {
+			modelUsed = a.llm.ModelName()
+		}
+		a.audit.LogModelCall(ctx, input.SessionID, modelUsed,
 			result.InputTokens, result.OutputTokens,
 			time.Since(callStart).Milliseconds())
 
