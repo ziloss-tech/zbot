@@ -1,5 +1,4 @@
 // Package webui serves the ZBOT web dashboard.
-// CRITICAL: Binds to 127.0.0.1 ONLY — never 0.0.0.0.
 package webui
 
 import (
@@ -8,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jeremylerwick-max/zbot/internal/agent"
@@ -190,8 +190,14 @@ func (s *Server) routes() {
 }
 
 // Start begins listening. Blocks until ctx is cancelled.
+// Binds to 0.0.0.0 if ZBOT_BIND_ALL=true or ZBOT_ENV=production (for Docker/Coolify).
+// Otherwise binds to 127.0.0.1 for local dev safety.
 func (s *Server) Start(ctx context.Context) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
+	host := "127.0.0.1"
+	if os.Getenv("ZBOT_BIND_ALL") == "true" || os.Getenv("ZBOT_ENV") == "production" {
+		host = "0.0.0.0"
+	}
+	addr := fmt.Sprintf("%s:%d", host, s.port)
 	srv := &http.Server{Addr: addr, Handler: s.mux}
 
 	go func() {

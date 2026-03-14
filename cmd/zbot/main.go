@@ -24,6 +24,15 @@ func main() {
 	cfg := platform.DefaultAppConfig()
 	cfg.Env = env
 
+	// Allow env var overrides for Docker/Coolify deployment.
+	if gcpProject := os.Getenv("ZBOT_GCP_PROJECT"); gcpProject != "" {
+		cfg.GCPProject = gcpProject
+	}
+	// In production with env var secrets available, skip GCP Secret Manager.
+	if env == "production" && os.Getenv("ZBOT_ANTHROPIC_API_KEY") != "" {
+		cfg.GCPProject = ""
+	}
+
 	logger := platform.NewLogger(env)
 	logger.Info("ZBOT starting", "env", env)
 

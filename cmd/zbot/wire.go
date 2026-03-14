@@ -86,28 +86,29 @@ INSTRUCTIONS:
 func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error {
 
 	// ── Secrets ─────────────────────────────────────────────────────────────
-	sm, err := secrets.NewGCPSecretManager(ctx, cfg.GCPProject)
-	if err != nil {
-		return fmt.Errorf("secrets init: %w", err)
+	// Try GCP Secret Manager first; fall back to env vars for Docker/Coolify.
+	var sm agent.SecretsManager
+	if cfg.GCPProject != "" {
+		gcpSM, gcpErr := secrets.NewGCPSecretManager(ctx, cfg.GCPProject)
+		if gcpErr != nil {
+			logger.Warn("GCP Secret Manager unavailable — using env var fallback", "err", gcpErr)
+			sm = secrets.NewEnvSecretManager()
+		} else {
+			sm = gcpSM
+			defer gcpSM.Close()
+		}
+	} else {
+		logger.Info("no GCP project configured — using env var secrets")
+		sm = secrets.NewEnvSecretManager()
 	}
-	defer sm.Close()
 
-	botToken, err := sm.Get(ctx, "zbot-slack-token")
-	if err != nil {
-		return fmt.Errorf("get slack bot token: %w", err)
-	}
-	appToken, err := sm.Get(ctx, "zbot-slack-app-token")
-	if err != nil {
-		return fmt.Errorf("get slack app token: %w", err)
-	}
+	botToken, _ := sm.Get(ctx, "zbot-slack-token")
+	appToken, _ := sm.Get(ctx, "zbot-slack-app-token")
 	anthropicKey, err := sm.Get(ctx, secrets.SecretAnthropicAPIKey)
-	if err != nil {
-		return fmt.Errorf("get anthropic key: %w", err)
+	if err != nil || anthropicKey == "" {
+		return fmt.Errorf("get anthropic key: ZBOT_ANTHROPIC_API_KEY is required: %w", err)
 	}
-	braveKey, err := sm.Get(ctx, secrets.SecretBraveAPIKey)
-	if err != nil {
-		return fmt.Errorf("get brave api key: %w", err)
-	}
+	braveKey, _ := sm.Get(ctx, secrets.SecretBraveAPIKey)
 
 	// Slack allowlist — who can message ZBOT. Empty/PENDING = dev mode (all users allowed).
 	allowedUserID, _ := sm.Get(ctx, "zbot-allowed-user-id")
@@ -996,38 +997,65 @@ If no, respond with JSON: {"save": false}`, message, reply)
 		logger.Warn("web UI disabled — no Postgres connection")
 	}
 
-	// ── Slack Gateway ────────────────────────────────────────────────────────
-	slackGW := gateway.NewSlackGateway(
-		botToken,
-		appToken,
-		allowedUsers,
-		handler,
-		logger,
-	)
+	// ── Slack Gateway (optional — skip if no tokens) ────────────────────────
+	if botToken != "" && appToken != "" {
+		slackGW := gateway.NewSlackGateway(
+			botToken,
+			appToken,
+			allowedUsers,
+			handler,
+			logger,
+		)
 
-	// Wire Slack notifier for research completions and scheduled jobs.
-	slackSendFn = slackGW.Send
-	// allowedUserID is the DM channel to post to (Slack DM channel = user ID).
-	if allowedUserID != "" && allowedUserID != "PENDING" {
-		if webServer != nil {
-			webServer.SetSlackNotifier(slackGW, allowedUserID)
+		// Wire Slack notifier for research completions and scheduled jobs.
+		slackSendFn = slackGW.Send
+		// allowedUserID is the DM channel to post to (Slack DM channel = user ID).
+		if allowedUserID != "" && allowedUserID != "PENDING" {
+			if webServer != nil {
+				webServer.SetSlackNotifier(slackGW, allowedUserID)
+			}
+			if schedRunner != nil {
+				schedRunner.SetFallbackChannel(allowedUserID)
+			}
 		}
-		if schedRunner != nil {
-			schedRunner.SetFallbackChannel(allowedUserID)
-		}
+
+		logger.Info("ZBOT starting — connecting to Slack",
+			"model", llmClient.ModelName(),
+			"workspace", workspaceRoot,
+			"skills", skillRegistry.Names(),
+		)
+		return slackGW.Start(ctx)
 	}
 
-	logger.Info("ZBOT starting — connecting to Slack",
+	// No Slack tokens — run in web-only mode. Block until ctx is cancelled.
+	logger.Info("ZBOT running in web-only mode (no Slack tokens)",
 		"model", llmClient.ModelName(),
 		"workspace", workspaceRoot,
 		"skills", skillRegistry.Names(),
 	)
-	return slackGW.Start(ctx)
+	<-ctx.Done()
+	return nil
 }
 
 // connectPostgres connects to Cloud SQL pgvector instance.
+// Supports ZBOT_DATABASE_URL env var override for flexible deployment.
 func connectPostgres(ctx context.Context, logger *slog.Logger, password string) (*pgxpool.Pool, error) {
-	connStr := fmt.Sprintf("postgresql://ziloss:%s@34.28.163.109:5432/ziloss_memory?sslmode=disable", password)
+	connStr := os.Getenv("ZBOT_DATABASE_URL")
+	if connStr == "" {
+		dbHost := os.Getenv("ZBOT_DB_HOST")
+		if dbHost == "" {
+			dbHost = "34.28.163.109"
+		}
+		dbName := os.Getenv("ZBOT_DB_NAME")
+		if dbName == "" {
+			dbName = "ziloss"
+		}
+		dbUser := os.Getenv("ZBOT_DB_USER")
+		if dbUser == "" {
+			dbUser = "zbot"
+		}
+		connStr = fmt.Sprintf("postgresql://%s:%s@%s:5432/%s?sslmode=disable", dbUser, password, dbHost, dbName)
+	}
 
 	poolCfg, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
