@@ -1,0 +1,7 @@
+.git
+*.md
+docs/
+deploy/
+scripts/
+internal/webui/frontend/node_modules
+workspace/
