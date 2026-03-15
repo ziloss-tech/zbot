@@ -27,8 +27,6 @@ var envMapping = map[string]string{
 	"zbot-db-password": "ZBOT_DB_PASSWORD",
 	// OpenRouter.
 	"OPENROUTER_API_KEY": "ZBOT_OPENROUTER_API_KEY",
-	// OpenAI (alias).
-	"openai-api-key": "ZBOT_OPENAI_API_KEY",
 	// Allowed user.
 	"zbot-allowed-user-id": "ZBOT_ALLOWED_USER_ID",
 	// Webhook.
