@@ -4,7 +4,7 @@ WORKDIR /app/internal/webui/frontend
 COPY internal/webui/frontend/package*.json ./
 RUN npm ci
 COPY internal/webui/frontend/ ./
-RUN npm run build
+RUN npx vite build
 
 # ── Stage 2: Build Go binary ─────────────────────────────────────────────
 FROM golang:1.26-alpine AS builder
