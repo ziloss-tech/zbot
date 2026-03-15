@@ -184,6 +184,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/claude/history", s.handleClaudeHistoryAPI)
 	s.mux.HandleFunc("/api/claude/stream", s.handleClaudeStreamAPI)
 
+	// Health check for Cloud Run / load balancers.
+	s.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
 	// Index — serve React app for command center (falls through to static for /app),
 	// or redirect to old dashboard for non-API paths.
 	s.mux.HandleFunc("/", s.handleIndex)

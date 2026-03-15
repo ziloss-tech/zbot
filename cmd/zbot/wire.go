@@ -824,9 +824,10 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	haikuForChat := llm.NewHaikuClient(anthropicKey, logger)
 
 	// ── Web UI (Sprint 8 + Sprint 11 Dual Brain Command Center) ─────────────
-	if pgDB != nil {
-		webServer = webui.New(pgDB, logger)
+	// Always start web UI so Cloud Run health checks pass (pgDB may be nil).
+	webServer = webui.New(pgDB, logger)
 
+	if pgDB != nil {
 		// Sprint 12: Wire memory store for memory panel API.
 		webServer.SetMemoryStore(memStore)
 
@@ -991,10 +992,14 @@ If no, respond with JSON: {"save": false}`, message, reply)
 			logger.Info("deep research panel wired into web UI")
 		}
 
-		go webServer.Start(ctx)
+	}
+
+	// Always start the web server (even without Postgres — degraded mode).
+	go webServer.Start(ctx)
+	if pgDB != nil {
 		logger.Info("web UI available", "url", "http://localhost:18790")
 	} else {
-		logger.Warn("web UI disabled — no Postgres connection")
+		logger.Warn("web UI started in degraded mode — no Postgres connection")
 	}
 
 	// ── Slack Gateway (optional — skip if no tokens) ────────────────────────
