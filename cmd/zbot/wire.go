@@ -41,36 +41,22 @@ import (
 	"github.com/jeremylerwick-max/zbot/internal/workflow"
 )
 
-// systemPrompt is ZBOT's base instruction set.
-const systemPrompt = `You are ZBOT, a personal AI agent built exclusively for Jeremy Lerwick, CEO and founder of Ziloss Technologies in Salt Lake City, Utah.
-
-You are NOT a general assistant. You are Jeremy's dedicated agent with full context about his businesses and goals.
-
-ABOUT JEREMY'S BUSINESSES:
-- Lead Certain: Performance-based lead nurturing service, $200K/month revenue, 75% margins
-- Ziloss CRM: SaaS platform under development (GoHighLevel competitor with AI-native features)
-- Real estate automation for his mother Deborah Boler's brokerage in Midland, Texas
-- Various AI agent orchestration and automation systems
-
-YOUR INTERFACE:
-- You are running as a Slack bot. You ARE Jeremy's Slack agent. Every message you receive is from Jeremy via Slack DM. You do not need Slack integration — you are already integrated.
+// defaultSystemPrompt is ZBOT's base instruction set.
+// Override with ZBOT_SYSTEM_PROMPT env var for custom personas.
+const defaultSystemPrompt = `You are ZBOT, a self-hosted AI agent with persistent memory and tool use.
 
 YOUR CAPABILITIES:
 - web_search: Search the internet for current information
 - fetch_url: Fetch and read the content of any URL
-- read_file: Read files from Jeremy's workspace
-- write_file: Write files to Jeremy's workspace
+- read_file / write_file: Read and write files in the workspace
 - run_code: Execute Python, Go, JavaScript, or bash code in a secure sandbox
-- save_memory: Save important facts to your long-term memory
-- search_memory: Search your long-term memory for facts you've previously saved
-- analyze_image: Analyze photos, screenshots, charts, or any image you receive
-- When images are sent directly in the chat, Claude's vision is automatically activated — describe what you see and answer any questions about it
-- For PDFs: text is automatically extracted and included in your context
+- save_memory: Save important facts to long-term memory
+- search_memory: Search long-term memory for previously saved facts
+- analyze_image: Analyze photos, screenshots, charts, or any image
 
 YOUR PERSONALITY:
 - Direct and efficient — no fluff, no unnecessary caveats
 - Action-oriented — when in doubt, do it and report back
-- Technically sophisticated — Jeremy is a senior developer, don't over-explain basics
 - Honest about limitations and uncertainty
 - Proactive — if you notice something important while doing a task, mention it
 
@@ -80,8 +66,15 @@ INSTRUCTIONS:
 - Save important information to memory using save_memory so you remember it next time
 - Use search_memory when the user asks "do you remember..." or "what do you know about..."
 - Keep responses concise unless detail is specifically needed
-- If a task will take multiple steps, briefly outline your plan before starting
-- Markdown formatting is fine — Slack renders it`
+- If a task will take multiple steps, briefly outline your plan before starting`
+
+// systemPrompt resolves the active system prompt (env override or default).
+var systemPrompt = func() string {
+	if custom := os.Getenv("ZBOT_SYSTEM_PROMPT"); custom != "" {
+		return custom
+	}
+	return defaultSystemPrompt
+}()
 
 func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error {
 
@@ -104,11 +97,22 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 
 	botToken, _ := sm.Get(ctx, "zbot-slack-token")
 	appToken, _ := sm.Get(ctx, "zbot-slack-app-token")
-	anthropicKey, err := sm.Get(ctx, secrets.SecretAnthropicAPIKey)
-	if err != nil || anthropicKey == "" {
-		return fmt.Errorf("get anthropic key: ZBOT_ANTHROPIC_API_KEY is required: %w", err)
-	}
+	anthropicKey, _ := sm.Get(ctx, secrets.SecretAnthropicAPIKey)
 	braveKey, _ := sm.Get(ctx, secrets.SecretBraveAPIKey)
+
+	// Check for configurable LLM backend (OpenAI-compatible: Ollama, Together, Groq, etc.)
+	llmBaseURL := os.Getenv("ZBOT_LLM_BASE_URL")
+	llmModel := os.Getenv("ZBOT_LLM_MODEL")
+	llmAPIKey := os.Getenv("ZBOT_LLM_API_KEY")
+	if llmAPIKey == "" {
+		llmAPIKey = anthropicKey // fallback to Anthropic key for OpenAI-compat providers
+	}
+	useOpenAICompat := llmBaseURL != "" && llmModel != ""
+
+	// At least one LLM backend must be configured.
+	if !useOpenAICompat && anthropicKey == "" {
+		return fmt.Errorf("no LLM configured: set ZBOT_LLM_BASE_URL+ZBOT_LLM_MODEL for open models, or ZBOT_ANTHROPIC_API_KEY for Claude")
+	}
 
 	// Slack allowlist — who can message ZBOT. Empty/PENDING = dev mode (all users allowed).
 	allowedUserID, _ := sm.Get(ctx, "zbot-allowed-user-id")
@@ -171,20 +175,31 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	}
 
 	// ── LLM Client ──────────────────────────────────────────────────────────
-	llmClient := llm.New(anthropicKey, logger)
-	logger.Info("LLM client ready", "model", llmClient.ModelName())
+	// Supports two modes:
+	//   1. OpenAI-compatible (Ollama, Together, Groq, vLLM, LM Studio, OpenRouter)
+	//      Set ZBOT_LLM_BASE_URL + ZBOT_LLM_MODEL + optionally ZBOT_LLM_API_KEY
+	//   2. Anthropic Claude (default)
+	//      Set ZBOT_ANTHROPIC_API_KEY
+	var llmClient agent.LLMClient
+	if useOpenAICompat {
+		llmClient = llm.NewOpenAICompatClient(llmBaseURL, llmAPIKey, llmModel, logger)
+		logger.Info("LLM client ready (OpenAI-compatible)", "model", llmModel, "base_url", llmBaseURL)
+	} else {
+		llmClient = llm.New(anthropicKey, logger)
+		logger.Info("LLM client ready (Anthropic)", "model", llmClient.ModelName())
+	}
 
-	// ── Planner + Critic (Sprint 10/11) — GPT-4o plans + reviews, Claude executes ─
+	// ── Planner + Critic (optional — only if OpenAI key is set) ─────────────
 	var taskPlanner *planner.Planner
 	var taskCritic *planner.Critic
 	if openaiKey, openaiErr := sm.Get(ctx, "openai-api-key"); openaiErr == nil && openaiKey != "" {
 		openaiClient := llm.NewOpenAIClient(openaiKey, "gpt-4o", logger)
 		taskPlanner = planner.New(openaiClient, logger)
-		taskPlanner.SetMemoryStore(memStore) // Sprint 12: inject memory into planner context
+		taskPlanner.SetMemoryStore(memStore)
 		taskCritic = planner.NewCritic(openaiClient, logger)
 		logger.Info("planner + critic ready", "model", "gpt-4o")
 	} else {
-		logger.Warn("OpenAI key not set — /plan command disabled")
+		logger.Info("planner/critic disabled — set ZBOT_OPENAI_API_KEY to enable")
 	}
 
 	// ── Scraper Stack (Sprint 4) ────────────────────────────────────────────
@@ -322,9 +337,14 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			dataStore := workflow.NewPGDataStore(pgDB)
 			orch = workflow.NewOrchestrator(wfStore, dataStore, ag, cfg.WorkerCount, logger)
 
-			// Sprint 12: Wire memory auto-save with Haiku for cheap insight extraction.
-			haikuClient := llm.NewHaikuClient(anthropicKey, logger)
-			orch.SetMemoryAutoSave(memStore, haikuClient)
+			// Sprint 12: Wire memory auto-save with cheap model for insight extraction.
+			var cheapClient agent.LLMClient
+			if useOpenAICompat {
+				cheapClient = llmClient
+			} else {
+				cheapClient = llm.NewHaikuClient(anthropicKey, logger)
+			}
+			orch.SetMemoryAutoSave(memStore, cheapClient)
 
 			go orch.Run(ctx)
 			logger.Info("workflow orchestrator started", "workers", cfg.WorkerCount)
@@ -820,8 +840,14 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	go webhookGW.Start(ctx)
 	logger.Info("webhook gateway ready", "port", 18791)
 
-	// ── Haiku Client for cheap tasks (Sprint 12) ────────────────────────────
-	haikuForChat := llm.NewHaikuClient(anthropicKey, logger)
+	// ── Cheap LLM for background tasks (fact extraction, etc.) ──────────────
+	// In OpenAI-compat mode, reuse the same model for everything.
+	var haikuForChat agent.LLMClient
+	if useOpenAICompat {
+		haikuForChat = llmClient // same model — open models are already cheap
+	} else {
+		haikuForChat = llm.NewHaikuClient(anthropicKey, logger)
+	}
 
 	// ── Web UI (Sprint 8 + Sprint 11 Dual Brain Command Center) ─────────────
 	// Always start web UI so Cloud Run health checks pass (pgDB may be nil).
