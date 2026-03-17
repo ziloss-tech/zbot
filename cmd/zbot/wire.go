@@ -194,20 +194,42 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	logger.Info("v2: single-brain architecture — Claude handles planning + execution + self-critique")
 
 	// ── Sprint D: Memory Flusher (context window compaction safety net) ────
+	var cheapModelClient agent.LLMClient
+	if useOpenAICompat {
+		cheapModelClient = llmClient
+	} else {
+		cheapModelClient = llm.NewHaikuClient(anthropicKey, logger)
+	}
+
 	if pgStore, ok := memStore.(*memory.Store); ok && pgDB != nil {
-		var cheapFlushClient agent.LLMClient
-		if useOpenAICompat {
-			cheapFlushClient = llmClient
-		} else {
-			cheapFlushClient = llm.NewHaikuClient(anthropicKey, logger)
-		}
-		flusher, flushErr := memory.NewFlusher(pgStore, cheapFlushClient, pgDB, logger)
+		flusher, flushErr := memory.NewFlusher(pgStore, cheapModelClient, pgDB, logger)
 		if flushErr != nil {
 			logger.Warn("memory flusher init failed", "err", flushErr)
 		} else {
 			_ = flusher // v2: Wired into agent loop when context window management is implemented.
 			logger.Info("memory flusher ready (Sprint D)")
 		}
+	}
+
+	// ── Sprint D Stretch: Markdown daily notes layer ────────────────────────
+	dailyNotesDir := filepath.Join(workspaceRoot, "memory")
+	dailyNotesWriter, dnErr := memory.NewDailyNotesWriter(dailyNotesDir)
+	if dnErr != nil {
+		logger.Warn("daily notes writer init failed", "err", dnErr)
+	} else {
+		logger.Info("daily notes writer ready", "dir", dailyNotesDir)
+	}
+
+	// ── Sprint D Stretch: Diversity re-ranker for memory search ─────────────
+	diversityReranker := memory.NewDiversityReranker(0) // 0 → uses default threshold (0.92)
+	logger.Info("diversity reranker ready", "threshold", memory.DefaultDiversityThreshold)
+
+	// ── Sprint D Stretch: Memory curator (periodic fact promotion) ───────────
+	if pgStore, ok := memStore.(*memory.Store); ok && dailyNotesWriter != nil {
+		curator := memory.NewCurator(pgStore, dailyNotesWriter, cheapModelClient, logger)
+		_ = curator // v2: Wired into scheduled task when periodic curation is enabled.
+		_ = diversityReranker // v2: Wired into memory search when retrieval pipeline is enhanced.
+		logger.Info("memory curator ready (Sprint D stretch)")
 	}
 
 	// ── Scraper Stack (Sprint 4) ────────────────────────────────────────────
@@ -263,6 +285,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		tools.NewWebSearchTool(braveKey),
 		tools.NewFetchURLToolFull(proxyPool, rateLimiter, scrapeCache, browserFetcher),
 		tools.NewCredentialedFetchTool(sm, siteCredentials, proxyPool, rateLimiter, scrapeCache, logger),
+		tools.NewManageCredentialsTool(sm, logger), // Sprint C stretch: credential CRUD
 		tools.NewReadFileTool(workspaceRoot),
 		tools.NewWriteFileTool(workspaceRoot),
 		tools.NewCodeRunnerTool(workspaceRoot),
