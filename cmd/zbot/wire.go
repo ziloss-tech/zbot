@@ -193,6 +193,23 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// OpenAI key is no longer required for core functionality.
 	logger.Info("v2: single-brain architecture — Claude handles planning + execution + self-critique")
 
+	// ── Sprint D: Memory Flusher (context window compaction safety net) ────
+	if pgStore, ok := memStore.(*memory.Store); ok && pgDB != nil {
+		var cheapFlushClient agent.LLMClient
+		if useOpenAICompat {
+			cheapFlushClient = llmClient
+		} else {
+			cheapFlushClient = llm.NewHaikuClient(anthropicKey, logger)
+		}
+		flusher, flushErr := memory.NewFlusher(pgStore, cheapFlushClient, pgDB, logger)
+		if flushErr != nil {
+			logger.Warn("memory flusher init failed", "err", flushErr)
+		} else {
+			_ = flusher // v2: Wired into agent loop when context window management is implemented.
+			logger.Info("memory flusher ready (Sprint D)")
+		}
+	}
+
 	// ── Scraper Stack (Sprint 4) ────────────────────────────────────────────
 	var proxyPool *scraper.ProxyPool
 	proxyList, proxyErr := sm.Get(ctx, "zbot-proxy-list")
@@ -235,10 +252,17 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		logger.Info("audit logger ready (noop — no Postgres)")
 	}
 
+	// ── Sprint C: Site credentials for authenticated fetching ───────────────
+	siteCredentials := []tools.SiteCredential{
+		// Add domain → credential mappings here as needed.
+		// Example: {DomainPattern: "*.github.com", Type: tools.CredBearer, SecretKey: "github-token"},
+	}
+
 	// ── Core Tools ──────────────────────────────────────────────────────────
 	coreTools := []agent.Tool{
 		tools.NewWebSearchTool(braveKey),
 		tools.NewFetchURLToolFull(proxyPool, rateLimiter, scrapeCache, browserFetcher),
+		tools.NewCredentialedFetchTool(sm, siteCredentials, proxyPool, rateLimiter, scrapeCache, logger),
 		tools.NewReadFileTool(workspaceRoot),
 		tools.NewWriteFileTool(workspaceRoot),
 		tools.NewCodeRunnerTool(workspaceRoot),
@@ -473,8 +497,32 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			logger.Warn("deep research partially unavailable — missing critic or store")
 		}
 	} else {
-		logger.Warn("deep research disabled — needs openrouter-api-key + Postgres")
+		logger.Warn("deep research v1 disabled — needs openrouter-api-key + Postgres")
 	}
+
+	// ── v2 Deep Research Pipeline (Haiku → Sonnet, no external deps) ─────
+	var researchOrchV2 *research.V2ResearchOrchestrator
+	if pgDB != nil && researchStore != nil {
+		haikuClient := llm.NewHaikuClient(anthropicKey, logger)
+		budgetTracker := research.NewBudgetTracker(pgDB)
+
+		researchOrchV2 = research.NewV2ResearchOrchestrator(
+			haikuClient,
+			llmClient, // Sonnet
+			tools.NewWebSearchTool(braveKey),
+			memStore,
+			claimMem,
+			researchStore,
+			budgetTracker,
+			logger,
+		)
+		logger.Info("v2 deep research pipeline ready",
+			"phase1", haikuClient.ModelName(),
+			"phase2", llmClient.ModelName(),
+		)
+	}
+	// Prefer v2 if available; fall back to v1.
+	_ = researchOrchV2
 
 	// ── Conversation History (in-memory, resets on restart) ──────────────────
 	var histMu sync.Mutex

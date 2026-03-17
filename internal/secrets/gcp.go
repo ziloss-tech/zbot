@@ -5,10 +5,12 @@ package secrets
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"google.golang.org/api/iterator"
 )
 
 // GCPSecretManager implements agent.SecretsManager using GCP Secret Manager.
@@ -40,20 +42,81 @@ func (s *GCPSecretManager) Get(ctx context.Context, name string) (string, error)
 	return string(resp.Payload.Data), nil
 }
 
-// Store is not yet implemented for GCP Secret Manager.
-// v2: Will be implemented in Sprint C for credentialed site research.
-func (s *GCPSecretManager) Store(_ context.Context, _ string, _ []byte) error {
-	return agent.ErrNotSupported
+// Store creates or updates a secret in GCP Secret Manager.
+// Sprint C: Full CRUD for credentialed site research.
+func (s *GCPSecretManager) Store(ctx context.Context, key string, value []byte) error {
+	parent := fmt.Sprintf("projects/%s", s.projectID)
+	secretName := fmt.Sprintf("%s/secrets/%s", parent, key)
+
+	// Try to add a new version to an existing secret.
+	_, err := s.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
+		Parent:  secretName,
+		Payload: &secretmanagerpb.SecretPayload{Data: value},
+	})
+	if err == nil {
+		return nil
+	}
+
+	// Secret doesn't exist — create it, then add the version.
+	_, createErr := s.client.CreateSecret(ctx, &secretmanagerpb.CreateSecretRequest{
+		Parent:   parent,
+		SecretId: key,
+		Secret: &secretmanagerpb.Secret{
+			Replication: &secretmanagerpb.Replication{
+				Replication: &secretmanagerpb.Replication_Automatic_{
+					Automatic: &secretmanagerpb.Replication_Automatic{},
+				},
+			},
+		},
+	})
+	if createErr != nil {
+		return fmt.Errorf("secrets.Store create %q: %w", key, createErr)
+	}
+
+	_, addErr := s.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
+		Parent:  secretName,
+		Payload: &secretmanagerpb.SecretPayload{Data: value},
+	})
+	if addErr != nil {
+		return fmt.Errorf("secrets.Store add version %q: %w", key, addErr)
+	}
+	return nil
 }
 
-// Delete is not yet implemented for GCP Secret Manager.
-func (s *GCPSecretManager) Delete(_ context.Context, _ string) error {
-	return agent.ErrNotSupported
+// Delete removes a secret and all its versions from GCP Secret Manager.
+func (s *GCPSecretManager) Delete(ctx context.Context, key string) error {
+	name := fmt.Sprintf("projects/%s/secrets/%s", s.projectID, key)
+	err := s.client.DeleteSecret(ctx, &secretmanagerpb.DeleteSecretRequest{Name: name})
+	if err != nil {
+		return fmt.Errorf("secrets.Delete %q: %w", key, err)
+	}
+	return nil
 }
 
-// List is not yet implemented for GCP Secret Manager.
-func (s *GCPSecretManager) List(_ context.Context, _ string) ([]string, error) {
-	return nil, agent.ErrNotSupported
+// List returns all secret names matching the given prefix.
+func (s *GCPSecretManager) List(ctx context.Context, prefix string) ([]string, error) {
+	parent := fmt.Sprintf("projects/%s", s.projectID)
+	it := s.client.ListSecrets(ctx, &secretmanagerpb.ListSecretsRequest{
+		Parent: parent,
+	})
+
+	var keys []string
+	for {
+		secret, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("secrets.List: %w", err)
+		}
+		// Extract short name from "projects/X/secrets/NAME".
+		parts := strings.Split(secret.Name, "/")
+		name := parts[len(parts)-1]
+		if prefix == "" || strings.HasPrefix(name, prefix) {
+			keys = append(keys, name)
+		}
+	}
+	return keys, nil
 }
 
 // Close releases the underlying gRPC connection.
