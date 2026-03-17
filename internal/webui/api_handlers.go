@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/planner"
 	"github.com/jeremylerwick-max/zbot/internal/research"
 	"github.com/jeremylerwick-max/zbot/internal/scheduler"
 )
@@ -125,10 +124,7 @@ func (s *Server) handlePlanAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.planner == nil {
-		http.Error(w, "planner not available", http.StatusServiceUnavailable)
-		return
-	}
+	// v2: Single-brain — orchestrator handles both planning and execution.
 	if s.orch == nil {
 		http.Error(w, "orchestrator not available", http.StatusServiceUnavailable)
 		return
@@ -159,61 +155,28 @@ func (s *Server) handlePlanAPI(w http.ResponseWriter, r *http.Request) {
 	go s.runPlanAndExecute(workflowID, req.Goal)
 }
 
-// runPlanAndExecute streams the planner output, persists events, then submits
-// the task graph to the orchestrator for Claude execution.
+// runPlanAndExecute uses the orchestrator's built-in decomposition (single-brain v2)
+// to plan and execute the goal. Claude does both planning and execution.
 func (s *Server) runPlanAndExecute(workflowID, goal string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	tokens := make(chan string, 128)
-
-	// Stream planner tokens to SSE hub + Postgres.
-	go func() {
-		for token := range tokens {
-			evt := Event{
-				WorkflowID: workflowID,
-				Source:     "planner",
-				Type:       "token",
-				Payload:    token,
-			}
-			s.hub.Publish(evt)
-			s.persistEvent(ctx, evt)
-		}
-	}()
-
-	graph, err := s.planner.PlanStream(ctx, goal, tokens)
-	close(tokens)
-
-	if err != nil {
-		errEvt := Event{
-			WorkflowID: workflowID,
-			Source:     "planner",
-			Type:       "error",
-			Payload:    err.Error(),
-		}
-		s.hub.Publish(errEvt)
-		s.persistEvent(ctx, errEvt)
-		s.logger.Error("plan stream failed", "workflow_id", workflowID, "err", err)
-		return
-	}
-
-	// Publish plan complete event with task summary.
-	taskSummary, _ := json.Marshal(graph.Tasks)
-	completeEvt := Event{
+	// v2: Single-brain — use orchestrator.Submit() which asks Claude to decompose
+	// the goal into tasks, then executes them. No separate GPT-4o planner.
+	planningEvt := Event{
 		WorkflowID: workflowID,
-		Source:     "planner",
-		Type:       "complete",
-		Payload:    string(taskSummary),
+		Source:     "agent",
+		Type:       "status",
+		Payload:    "decomposing goal into tasks...",
 	}
-	s.hub.Publish(completeEvt)
-	s.persistEvent(ctx, completeEvt)
+	s.hub.Publish(planningEvt)
+	s.persistEvent(ctx, planningEvt)
 
-	// Submit to orchestrator — creates the workflow + tasks in Postgres.
-	wfID, submitErr := planner.Submit(ctx, s.orch.Store(), graph, "webui-"+workflowID)
+	wfID, submitErr := s.orch.Submit(ctx, "webui-"+workflowID, goal)
 	if submitErr != nil {
 		errEvt := Event{
 			WorkflowID: workflowID,
-			Source:     "planner",
+			Source:     "agent",
 			Type:       "error",
 			Payload:    "submit failed: " + submitErr.Error(),
 		}
@@ -222,6 +185,16 @@ func (s *Server) runPlanAndExecute(workflowID, goal string) {
 		s.logger.Error("plan submit failed", "workflow_id", workflowID, "err", submitErr)
 		return
 	}
+
+	// Publish plan complete event.
+	completeEvt := Event{
+		WorkflowID: workflowID,
+		Source:     "agent",
+		Type:       "complete",
+		Payload:    fmt.Sprintf("workflow %s submitted", wfID),
+	}
+	s.hub.Publish(completeEvt)
+	s.persistEvent(ctx, completeEvt)
 
 	// Store the goal on the workflow for display.
 	s.storeWorkflowGoal(ctx, wfID, goal)
@@ -239,7 +212,6 @@ func (s *Server) runPlanAndExecute(workflowID, goal string) {
 	s.logger.Info("plan submitted to orchestrator",
 		"display_id", workflowID,
 		"workflow_id", wfID,
-		"tasks", len(graph.Tasks),
 	)
 }
 

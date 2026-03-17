@@ -24,10 +24,9 @@ import (
 // Used by the webui SSE hub to broadcast task status changes.
 type TaskEventFunc func(workflowID, taskID, eventType, payload string)
 
-// CriticFunc reviews a completed task's output and returns a JSON verdict.
-// The orchestrator calls this after a task completes, before moving on.
-// Parameters: ctx, workflowID, taskID, instruction, output.
-// Returns: verdict JSON string, corrected instruction (empty if pass), error.
+// CriticFunc is DEPRECATED in v2 (single-brain architecture).
+// Kept as a type alias for backward compatibility during migration.
+// The orchestrator no longer calls an external critic — Claude self-critiques.
 type CriticFunc func(ctx context.Context, workflowID, taskID, instruction, output string) (verdictJSON string, correctedInstruction string, shouldRetry bool, err error)
 
 // InsightExtractor is a lightweight LLM call (Haiku) for extracting saveable facts.

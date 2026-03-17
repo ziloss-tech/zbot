@@ -42,8 +42,11 @@ type Config struct {
 	MemorySearchLimit int
 
 	// TokenWarningThreshold triggers a memory flush at this fraction of context used.
-	// Default: 0.75 (flush at 75% context usage).
+	// Default: 0.80 (flush at 80% context usage). v2: raised from 0.75.
 	TokenWarningThreshold float64
+
+	// Router controls model tier escalation behavior.
+	Router RouterConfig
 }
 
 // DefaultConfig returns safe production defaults.
@@ -51,7 +54,8 @@ func DefaultConfig() Config {
 	return Config{
 		MaxToolRounds:         10,
 		MemorySearchLimit:     8,
-		TokenWarningThreshold: 0.75,
+		TokenWarningThreshold: 0.80,
+		Router:                DefaultRouterConfig(),
 	}
 }
 
@@ -226,10 +230,10 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		output.ToolsInvoked = append(output.ToolsInvoked, name)
 	}
 
-	// Calculate approximate cost (Claude Sonnet pricing).
-	const costPerInputToken = 0.000003  // $3 / million
-	const costPerOutputToken = 0.000015 // $15 / million
-	costUSD := float64(output.InputTokens)*costPerInputToken + float64(output.OutputTokens)*costPerOutputToken
+	// v2: Calculate cost based on actual model tier used (not always Sonnet).
+	modelTier := ResolveModelTier(input.ModelHint, input.UserMsg.Content)
+	inputCost, outputCost := ModelTierCost(modelTier)
+	costUSD := float64(output.InputTokens)*inputCost + float64(output.OutputTokens)*outputCost
 	output.CostUSD = costUSD
 
 	completeArgs := []any{

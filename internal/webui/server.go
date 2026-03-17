@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jeremylerwick-max/zbot/internal/agent"
-	"github.com/jeremylerwick-max/zbot/internal/planner"
 	"github.com/jeremylerwick-max/zbot/internal/research"
 	"github.com/jeremylerwick-max/zbot/internal/scheduler"
 	"github.com/jeremylerwick-max/zbot/internal/workflow"
@@ -38,7 +37,6 @@ type Server struct {
 	logger    *slog.Logger
 	mux       *http.ServeMux
 	hub       *Hub
-	planner   *planner.Planner
 	orch      *workflow.Orchestrator
 	memStore  agent.MemoryStore // Sprint 12: memory panel + quick chat
 	quickChat QuickChatFunc     // Sprint 12: memory-aware quick chat handler
@@ -65,11 +63,6 @@ func New(db *pgxpool.Pool, logger *slog.Logger) *Server {
 	}
 	s.routes()
 	return s
-}
-
-// SetPlanner sets the planner for streaming plan creation.
-func (s *Server) SetPlanner(p *planner.Planner) {
-	s.planner = p
 }
 
 // SetOrchestrator sets the orchestrator for workflow management.
