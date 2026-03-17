@@ -42,8 +42,8 @@ DO NOT retrieve when:
 - The query is general knowledge, not Jeremy-specific.
 
 RETRIEVAL TECHNIQUE:
-- Use short, semantic queries. "Lead Certain pricing model" not "what is the
-  pricing model for Jeremy's lead nurturing business called Lead Certain."
+- Use short, semantic queries. "company pricing model" not "what is the
+  pricing model for the user's business."
 - If the first search returns nothing useful, try ONE rephrased query before
   giving up. Don't spam memory searches.
 - When results come back, use them silently. Don't narrate: "I found in memory
@@ -66,7 +66,7 @@ CATEGORIES (use the right one in save_memory):
 preference — How Jeremy likes things done. Standing instructions.
   Examples: "Jeremy prefers Go over Python for new services."
             "Jeremy wants all secrets in GCP Secret Manager, never env vars."
-            "Lead Certain emails should be direct and ROI-focused."
+            "Business emails should be direct and ROI-focused."
 
 project_state — What we just built, where it is, what's next.
   Examples: "ZBOT Sprint 18 complete: collapsible sidebar + 3-panel layout."
@@ -77,8 +77,8 @@ decision — A choice that was made and should persist.
             "GHL DND review: 3-phase safety protocol required."
 
 glossary — Domain-specific terms, acronyms, proper nouns.
-  Examples: "Esler CST = GHL location ID fRrP1e3LGLFewc5dQDhS."
-            "EnabledPlus = CRM used by Lead Certain clients."
+  Examples: "Client X = GHL location ID abc123."
+            "Platform Y = CRM used by clients."
 
 do_not_do — Explicit prohibitions or lessons learned.
   Examples: "Never modify GHL contacts without explicit phase approval."

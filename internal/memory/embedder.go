@@ -23,7 +23,7 @@ type VertexEmbedder struct {
 }
 
 // NewVertexEmbedder creates an embedder using Vertex AI.
-// project: GCP project ID (e.g. "ziloss")
+// project: GCP project ID (e.g. "my-project")
 // location: GCP region (e.g. "us-central1")
 func NewVertexEmbedder(ctx context.Context, project, location string, logger *slog.Logger) (*VertexEmbedder, error) {
 	apiEndpoint := fmt.Sprintf("%s-aiplatform.googleapis.com:443", location)

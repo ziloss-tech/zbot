@@ -1,4 +1,4 @@
-module github.com/jeremylerwick-max/zbot
+module github.com/zbot-ai/zbot
 
 go 1.26.0
 

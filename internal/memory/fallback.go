@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // InMemoryStore implements agent.MemoryStore using a sync.Map.

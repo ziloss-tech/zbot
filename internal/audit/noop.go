@@ -6,7 +6,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // NoopLogger logs audit events to slog but doesn't persist them.

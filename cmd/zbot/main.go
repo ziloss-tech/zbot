@@ -11,7 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jeremylerwick-max/zbot/internal/platform"
+	"github.com/zbot-ai/zbot/internal/platform"
 )
 
 func main() {

@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/security"
+	"github.com/zbot-ai/zbot/internal/security"
 )
 
 // ─── Model Hint Context ─────────────────────────────────────────────────────

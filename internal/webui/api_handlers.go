@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/research"
-	"github.com/jeremylerwick-max/zbot/internal/scheduler"
+	"github.com/zbot-ai/zbot/internal/research"
+	"github.com/zbot-ai/zbot/internal/scheduler"
 )
 
 // ─── SSE STREAM ──────────────────────────────────────────────────────────────

@@ -149,12 +149,12 @@ _Created: 2026-03-16 | Status: PLANNING_
 ## Tech Stack (unchanged)
 - **Language:** Go
 - **LLM:** Anthropic API (Sonnet 4.6 default, Opus 4.6 escalation, Haiku for bulk)
-- **Memory:** pgvector (PostgreSQL 34.28.163.109/ziloss_memory)
+- **Memory:** pgvector (PostgreSQL localhost:5432/zbot)
 - **Search:** Brave Search API
 - **Secrets:** macOS Keychain (default) + GCloud Secret Manager (power users)
 - **Scraping:** go-rod (headless Chromium)
 - **Channels:** Telegram, Web UI, Slack, (future: Halo glasses)
-- **Infrastructure:** Claudius Maximus (Mac Studio M3 Ultra), GCP (ziloss project)
+- **Infrastructure:** your machine, GCP (your GCP project)
 
 ---
 

@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // Curator reviews daily notes and promotes important facts to permanent memory.

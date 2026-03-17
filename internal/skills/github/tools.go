@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
-const defaultRepo = "jeremylerwick-max/zbot"
+const defaultRepo = "your-username/zbot"
 
 func repoOrDefault(input map[string]any) string {
 	if r, ok := input["repo"].(string); ok && r != "" {
@@ -31,7 +31,7 @@ func (t *ListIssuesTool) Definition() agent.ToolDefinition {
 			"type":     "object",
 			"required": []string{},
 			"properties": map[string]any{
-				"repo":   map[string]any{"type": "string", "description": "owner/repo (default: jeremylerwick-max/zbot)"},
+				"repo":   map[string]any{"type": "string", "description": "owner/repo (default: your-username/zbot)"},
 				"state":  map[string]any{"type": "string", "description": "Issue state: open, closed, all (default: open)"},
 				"labels": map[string]any{"type": "string", "description": "Comma-separated label filter"},
 			},
@@ -72,7 +72,7 @@ func (t *GetIssueTool) Definition() agent.ToolDefinition {
 			"type":     "object",
 			"required": []string{"number"},
 			"properties": map[string]any{
-				"repo":   map[string]any{"type": "string", "description": "owner/repo (default: jeremylerwick-max/zbot)"},
+				"repo":   map[string]any{"type": "string", "description": "owner/repo (default: your-username/zbot)"},
 				"number": map[string]any{"type": "integer", "description": "Issue number"},
 			},
 		},
@@ -108,7 +108,7 @@ func (t *CreateIssueTool) Definition() agent.ToolDefinition {
 			"type":     "object",
 			"required": []string{"title"},
 			"properties": map[string]any{
-				"repo":      map[string]any{"type": "string", "description": "owner/repo (default: jeremylerwick-max/zbot)"},
+				"repo":      map[string]any{"type": "string", "description": "owner/repo (default: your-username/zbot)"},
 				"title":     map[string]any{"type": "string", "description": "Issue title"},
 				"body":      map[string]any{"type": "string", "description": "Issue body (markdown)"},
 				"labels":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Labels to add"},
@@ -159,7 +159,7 @@ func (t *ListPRsTool) Definition() agent.ToolDefinition {
 			"type":     "object",
 			"required": []string{},
 			"properties": map[string]any{
-				"repo":  map[string]any{"type": "string", "description": "owner/repo (default: jeremylerwick-max/zbot)"},
+				"repo":  map[string]any{"type": "string", "description": "owner/repo (default: your-username/zbot)"},
 				"state": map[string]any{"type": "string", "description": "PR state: open, closed, all (default: open)"},
 			},
 		},
@@ -195,7 +195,7 @@ func (t *GetFileTool) Definition() agent.ToolDefinition {
 			"type":     "object",
 			"required": []string{"path"},
 			"properties": map[string]any{
-				"repo": map[string]any{"type": "string", "description": "owner/repo (default: jeremylerwick-max/zbot)"},
+				"repo": map[string]any{"type": "string", "description": "owner/repo (default: your-username/zbot)"},
 				"path": map[string]any{"type": "string", "description": "File path in the repo (e.g. cmd/zbot/main.go)"},
 				"ref":  map[string]any{"type": "string", "description": "Branch or commit SHA (default: main)"},
 			},

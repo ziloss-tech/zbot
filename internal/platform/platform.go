@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // ─── LOGGING ─────────────────────────────────────────────────────────────────
@@ -87,12 +87,13 @@ type AppConfig struct {
 	WorkerCount       int      `json:"worker_count"`
 	GatewayPort       int      `json:"gateway_port"`
 	WorkspaceRoot     string   `json:"workspace_root"`
+	GHLLocationID     string   `json:"ghl_location_id"`
 }
 
 func DefaultAppConfig() AppConfig {
 	return AppConfig{
 		Env:           "development",
-		GCPProject:    "ziloss",
+		GCPProject:    "",
 		WorkerCount:   3,
 		GatewayPort:   18790,
 		WorkspaceRoot: os.ExpandEnv("$HOME/zbot-workspace"),

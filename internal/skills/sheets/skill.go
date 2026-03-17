@@ -9,7 +9,7 @@ import (
 	"google.golang.org/api/option"
 	sheetsv4 "google.golang.org/api/sheets/v4"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // Skill wraps the Google Sheets service.

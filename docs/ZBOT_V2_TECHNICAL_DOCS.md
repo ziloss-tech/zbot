@@ -551,7 +551,7 @@ memory:
 # Secrets
 secrets:
   backend: keychain          # keychain | gcloud
-  gcloud_project: ziloss     # only used if backend=gcloud
+  gcloud_project: your-project     # only used if backend=gcloud
 
 # Deep Research
 research:

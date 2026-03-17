@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
-	"github.com/jeremylerwick-max/zbot/internal/scraper"
+	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/scraper"
 )
 
 // ─── WEB SEARCH ──────────────────────────────────────────────────────────────

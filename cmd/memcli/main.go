@@ -20,7 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/jeremylerwick-max/zbot/internal/memory"
+	"github.com/zbot-ai/zbot/internal/memory"
 )
 
 func main() {
@@ -44,7 +44,7 @@ func main() {
 
 	// Try Vertex AI embedder; fall back to noop for BM25-only search.
 	var embedder memory.Embedder
-	vertexEmbed, vertexErr := memory.NewVertexEmbedder(ctx, "ziloss", "us-central1", logger)
+	vertexEmbed, vertexErr := memory.NewVertexEmbedder(ctx, os.Getenv("ZBOT_GCP_PROJECT"), "us-central1", logger)
 	if vertexErr != nil {
 		fmt.Fprintf(os.Stderr, "⚠ Vertex AI unavailable — using BM25-only search\n")
 		embedder = memory.NoopEmbedder{}
@@ -199,7 +199,7 @@ func connectPostgres(ctx context.Context) (*pgxpool.Pool, error) {
 	if dbPass == "" {
 		return nil, fmt.Errorf("ZBOT_DB_PASSWORD env var not set — export it or source your .env")
 	}
-	connStr := fmt.Sprintf("postgresql://ziloss:%s@34.28.163.109:5432/ziloss_memory?sslmode=disable", dbPass)
+	connStr := fmt.Sprintf("postgresql://zbot:%s@localhost:5432/zbot?sslmode=disable", dbPass)
 	poolCfg, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)

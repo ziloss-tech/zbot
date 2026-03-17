@@ -52,7 +52,7 @@ Fetch content from authenticated sites without exposing credentials:
 ollama pull llama3.1:8b
 
 # 2. Clone and run ZBOT
-git clone https://github.com/jeremylerwick-max/zbot.git
+git clone https://github.com/zbot-ai/zbot.git
 cd zbot
 cp .env.example .env
 # .env defaults to Ollama — just run it:
@@ -68,7 +68,7 @@ docker run -p 18790:18790 \
   -e ZBOT_LLM_BASE_URL=http://host.docker.internal:11434/v1 \
   -e ZBOT_LLM_MODEL=llama3.1:8b \
   -e ZBOT_LLM_API_KEY=ollama \
-  ghcr.io/jeremylerwick-max/zbot:latest
+  ghcr.io/zbot-ai/zbot:latest
 ```
 
 ### Option 3: Claude (Anthropic)

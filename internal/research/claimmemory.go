@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jeremylerwick-max/zbot/internal/memory"
+	"github.com/zbot-ai/zbot/internal/memory"
 )
 
 // stalenessAge defines how long a claim is considered fresh per tier.

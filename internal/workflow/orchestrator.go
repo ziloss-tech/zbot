@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
-	"github.com/jeremylerwick-max/zbot/internal/platform"
+	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/platform"
 )
 
 // TaskEventFunc is a callback for task lifecycle events.
