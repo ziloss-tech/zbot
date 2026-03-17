@@ -10,10 +10,10 @@ import (
 	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jeremylerwick-max/zbot/internal/agent"
-	"github.com/jeremylerwick-max/zbot/internal/research"
-	"github.com/jeremylerwick-max/zbot/internal/scheduler"
-	"github.com/jeremylerwick-max/zbot/internal/workflow"
+	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/research"
+	"github.com/zbot-ai/zbot/internal/scheduler"
+	"github.com/zbot-ai/zbot/internal/workflow"
 )
 
 // ResearchSlackNotifier sends a Slack message when deep research completes.

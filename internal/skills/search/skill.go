@@ -1,7 +1,7 @@
 package search
 
 import (
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // Skill provides web search and page scraping capabilities.

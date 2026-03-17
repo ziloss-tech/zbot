@@ -586,9 +586,9 @@ NEVER IN:                      ALWAYS IN:
 | Component | Location |
 |-----------|----------|
 | ZBOT binary | Claudius Maximus (Mac Studio M3 Ultra) |
-| PostgreSQL + pgvector | 34.28.163.109 (GCP, ziloss_memory DB) |
+| PostgreSQL + pgvector | localhost (GCP, zbot DB) |
 | Secrets (default) | macOS Keychain (local) |
-| Secrets (alternative) | GCloud Secret Manager (ziloss project) |
+| Secrets (alternative) | GCloud Secret Manager (your project) |
 | Search API | Brave Search API (remote) |
 | LLM API | Anthropic API (remote) |
 | Headless browser | go-rod / Chromium (local) |

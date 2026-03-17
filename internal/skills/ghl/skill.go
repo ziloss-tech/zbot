@@ -2,7 +2,7 @@
 package ghl
 
 import (
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // Skill wraps the GHL client and tools into a skills.Skill implementation.
@@ -37,5 +37,5 @@ You have direct access to Jeremy's GoHighLevel CRM. You can:
 - View SMS/email conversations (ghl_get_conversations)
 - Send SMS messages (ghl_send_message) — ALWAYS preview first, require explicit confirmation
 - View pipeline stages and opportunities (ghl_get_pipeline)
-Location ID: fRrP1e3LGLFewc5dQDhS`
+Location ID: (configured per deployment)`
 }

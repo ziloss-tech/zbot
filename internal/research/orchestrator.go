@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
-	"github.com/jeremylerwick-max/zbot/internal/llm"
-	"github.com/jeremylerwick-max/zbot/internal/prompts"
+	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/llm"
+	"github.com/zbot-ai/zbot/internal/prompts"
 )
 
 const (

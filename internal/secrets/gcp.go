@@ -9,7 +9,7 @@ import (
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 	"google.golang.org/api/iterator"
 )
 
@@ -126,7 +126,7 @@ func (s *GCPSecretManager) Close() error {
 
 // SecretNames centralizes all secret name constants.
 // Add new secrets here — never scatter string literals through the codebase.
-// SecretNames maps to actual GCP Secret Manager names in the ziloss project.
+// SecretNames maps to actual GCP Secret Manager names in the your GCP project.
 // Using existing secrets where possible — only zbot-telegram-token is new.
 const (
 	SecretAnthropicAPIKey = "ANTHROPIC_API_KEY"    // existing

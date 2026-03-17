@@ -7,7 +7,7 @@ import (
 	"net/smtp"
 	"strings"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // Skill provides send_email with confirmation.

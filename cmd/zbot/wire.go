@@ -16,28 +16,28 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
-	"github.com/jeremylerwick-max/zbot/internal/audit"
-	"github.com/jeremylerwick-max/zbot/internal/gateway"
-	"github.com/jeremylerwick-max/zbot/internal/llm"
-	"github.com/jeremylerwick-max/zbot/internal/memory"
-	"github.com/jeremylerwick-max/zbot/internal/platform"
-	"github.com/jeremylerwick-max/zbot/internal/prompts"
-	"github.com/jeremylerwick-max/zbot/internal/scheduler"
-	"github.com/jeremylerwick-max/zbot/internal/scraper"
-	"github.com/jeremylerwick-max/zbot/internal/secrets"
-	"github.com/jeremylerwick-max/zbot/internal/skills"
-	skillEmail "github.com/jeremylerwick-max/zbot/internal/skills/email"
-	skillGHL "github.com/jeremylerwick-max/zbot/internal/skills/ghl"
-	skillGitHub "github.com/jeremylerwick-max/zbot/internal/skills/github"
-	skillMemory "github.com/jeremylerwick-max/zbot/internal/skills/memory"
-	skillSearch "github.com/jeremylerwick-max/zbot/internal/skills/search"
-	skillSheets "github.com/jeremylerwick-max/zbot/internal/skills/sheets"
-	"github.com/jeremylerwick-max/zbot/internal/research"
-	"github.com/jeremylerwick-max/zbot/internal/security"
-	"github.com/jeremylerwick-max/zbot/internal/tools"
-	"github.com/jeremylerwick-max/zbot/internal/webui"
-	"github.com/jeremylerwick-max/zbot/internal/workflow"
+	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/audit"
+	"github.com/zbot-ai/zbot/internal/gateway"
+	"github.com/zbot-ai/zbot/internal/llm"
+	"github.com/zbot-ai/zbot/internal/memory"
+	"github.com/zbot-ai/zbot/internal/platform"
+	"github.com/zbot-ai/zbot/internal/prompts"
+	"github.com/zbot-ai/zbot/internal/scheduler"
+	"github.com/zbot-ai/zbot/internal/scraper"
+	"github.com/zbot-ai/zbot/internal/secrets"
+	"github.com/zbot-ai/zbot/internal/skills"
+	skillEmail "github.com/zbot-ai/zbot/internal/skills/email"
+	skillGHL "github.com/zbot-ai/zbot/internal/skills/ghl"
+	skillGitHub "github.com/zbot-ai/zbot/internal/skills/github"
+	skillMemory "github.com/zbot-ai/zbot/internal/skills/memory"
+	skillSearch "github.com/zbot-ai/zbot/internal/skills/search"
+	skillSheets "github.com/zbot-ai/zbot/internal/skills/sheets"
+	"github.com/zbot-ai/zbot/internal/research"
+	"github.com/zbot-ai/zbot/internal/security"
+	"github.com/zbot-ai/zbot/internal/tools"
+	"github.com/zbot-ai/zbot/internal/webui"
+	"github.com/zbot-ai/zbot/internal/workflow"
 )
 
 // defaultSystemPrompt is ZBOT's base instruction set.
@@ -306,7 +306,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	logger.Info("skill registered: search")
 
 	if ghlKey, ghlErr := sm.Get(ctx, "ghl-api-token"); ghlErr == nil && ghlKey != "" {
-		skillRegistry.Register(skillGHL.NewSkill(ghlKey, "fRrP1e3LGLFewc5dQDhS"))
+		skillRegistry.Register(skillGHL.NewSkill(ghlKey, cfg.GHLLocationID))
 		logger.Info("skill registered: ghl")
 	} else {
 		logger.Warn("GHL skill skipped — secret 'ghl-api-key' not available")
@@ -1067,11 +1067,11 @@ func connectPostgres(ctx context.Context, logger *slog.Logger, password string) 
 	if connStr == "" {
 		dbHost := os.Getenv("ZBOT_DB_HOST")
 		if dbHost == "" {
-			dbHost = "34.28.163.109"
+			dbHost = "localhost"
 		}
 		dbName := os.Getenv("ZBOT_DB_NAME")
 		if dbName == "" {
-			dbName = "ziloss"
+			dbName = "zbot"
 		}
 		dbUser := os.Getenv("ZBOT_DB_USER")
 		if dbUser == "" {
@@ -1097,7 +1097,7 @@ func connectPostgres(ctx context.Context, logger *slog.Logger, password string) 
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
-	logger.Info("postgres connected", "host", "34.28.163.109")
+	logger.Info("postgres connected")
 	return pool, nil
 }
 

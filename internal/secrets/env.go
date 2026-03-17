@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // envMapping maps GCP secret names to environment variable names.

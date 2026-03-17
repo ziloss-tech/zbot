@@ -13,7 +13,7 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // OpenAICompatClient implements agent.LLMClient for any OpenAI-compatible API.

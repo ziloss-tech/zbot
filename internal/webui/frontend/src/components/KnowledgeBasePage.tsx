@@ -8,7 +8,7 @@ export function KnowledgeBasePage() {
       </p>
       <div className="mt-6 space-y-2 text-left w-full max-w-sm">
         {[
-          'Lead Certain playbook & pricing rules',
+          'Business playbook & pricing rules',
           'Ziloss CRM PRD & competitive positioning',
           'GHL location IDs & workflow docs',
           'Esler account details & contacts',

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // SearchMemoryTool implements agent.Tool for explicit memory search.

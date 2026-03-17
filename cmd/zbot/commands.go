@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
-	"github.com/jeremylerwick-max/zbot/internal/research"
-	"github.com/jeremylerwick-max/zbot/internal/scheduler"
-	"github.com/jeremylerwick-max/zbot/internal/workflow"
+	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/research"
+	"github.com/zbot-ai/zbot/internal/scheduler"
+	"github.com/zbot-ai/zbot/internal/workflow"
 )
 
 // SlackCommands handles all slash command routing.

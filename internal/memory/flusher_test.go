@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // mockLLM implements agent.LLMClient for testing.

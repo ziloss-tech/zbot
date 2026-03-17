@@ -6,7 +6,7 @@ package skills
 import (
 	"strings"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // Skill is a named collection of tools with a description and permission set.

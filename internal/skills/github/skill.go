@@ -1,7 +1,7 @@
 package github
 
 import (
-	"github.com/jeremylerwick-max/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/agent"
 )
 
 // Skill wraps the GitHub client and tools into a skills.Skill implementation.
@@ -29,7 +29,7 @@ func (s *Skill) Tools() []agent.Tool {
 
 func (s *Skill) SystemPromptAddendum() string {
 	return `### GitHub
-You have access to GitHub repos. Default repo: jeremylerwick-max/zbot
+You have access to GitHub repos. Default repo: your-username/zbot
 - List and view issues (github_list_issues, github_get_issue)
 - Create issues (github_create_issue)
 - List pull requests (github_list_prs)

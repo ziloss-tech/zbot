@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jeremylerwick-max/zbot/internal/agent"
-	"github.com/jeremylerwick-max/zbot/internal/audit"
-	"github.com/jeremylerwick-max/zbot/internal/memory"
+	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/zbot-ai/zbot/internal/audit"
+	"github.com/zbot-ai/zbot/internal/memory"
 )
 
 const (
