@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jeremylerwick-max/zbot/internal/agent"
-	"github.com/jeremylerwick-max/zbot/internal/planner"
 	"github.com/jeremylerwick-max/zbot/internal/research"
 	"github.com/jeremylerwick-max/zbot/internal/scheduler"
 	"github.com/jeremylerwick-max/zbot/internal/workflow"
@@ -20,7 +19,6 @@ import (
 // Returned bool = true means the message was handled as a command.
 type SlackCommands struct {
 	orch          *workflow.Orchestrator
-	taskPlanner   *planner.Planner
 	sched         *scheduler.Scheduler
 	schedJobStore scheduler.JobStore
 	researchOrch  *research.ResearchOrchestrator
@@ -132,7 +130,7 @@ func (c *SlackCommands) handleHelp() string {
 		"• " + b + "//memory <query>" + b + " — search long-term memory\n" +
 		"• " + b + "//claims <query>" + b + " — search verified research claims\n\n" +
 		"*Workflows*\n" +
-		"• " + b + "plan: <goal>" + b + " — GPT-4o plans, Claude executes\n" +
+		"• " + b + "plan: <goal>" + b + " — Claude decomposes and executes\n" +
 		"• " + b + "//status <id>" + b + " — check workflow progress\n" +
 		"• " + b + "//cancel <id>" + b + " — cancel pending tasks\n\n" +
 		"*Schedules*\n" +

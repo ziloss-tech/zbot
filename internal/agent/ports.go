@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -91,10 +92,25 @@ type ToolResult struct {
 	IsError    bool
 }
 
+// ─── MODEL TIER ─────────────────────────────────────────────────────────────
+
+// ModelTier represents a cost/capability tier for model selection.
+// The router maps these to concrete model identifiers.
+type ModelTier string
+
+const (
+	ModelTierHaiku  ModelTier = "haiku"  // Bulk extraction, lightweight classification
+	ModelTierSonnet ModelTier = "sonnet" // Default brain — planning, execution, self-critique
+	ModelTierOpus   ModelTier = "opus"   // Complex reasoning escalation
+	ModelTierAuto   ModelTier = "auto"   // Let the router decide based on content
+)
+
 // ─── PORTS (INTERFACES) ──────────────────────────────────────────────────────
 
 // LLMClient is the port for any AI model provider.
-// Adapters: Claude (Anthropic), GPT-4 (OpenAI).
+// v2: Single-brain architecture — one interface replaces the old
+// PlannerClient + ExecutorClient + CriticClient split.
+// Adapters: Claude (Anthropic), OpenAI-compatible.
 type LLMClient interface {
 	// Complete sends messages to the model and returns the response.
 	// tools is nil for plain completion, non-nil to enable tool use.
@@ -115,6 +131,8 @@ type CompletionResult struct {
 	Model        string // actual model used (may differ from default due to routing)
 	InputTokens  int
 	OutputTokens int
+	CacheRead    int // prompt caching hits (v2)
+	CacheWrite   int // prompt caching writes (v2)
 }
 
 // ToolDefinition describes a tool to the LLM.
@@ -125,6 +143,7 @@ type ToolDefinition struct {
 }
 
 // MemoryStore is the port for persistent semantic memory.
+// v2: Extended with daily notes, diversity re-ranking, and context flush.
 // Adapter: pgvector on GCP Cloud SQL (reuses existing Vertex AI infra).
 type MemoryStore interface {
 	// Save persists a fact to long-term memory.
@@ -132,10 +151,22 @@ type MemoryStore interface {
 
 	// Search retrieves facts semantically relevant to query.
 	// Uses hybrid BM25 + vector scoring with time decay.
+	// v2: Results are diversity-reranked (threshold 0.92) to avoid near-duplicates.
 	Search(ctx context.Context, query string, limit int) ([]Fact, error)
 
 	// Delete removes a fact by ID.
 	Delete(ctx context.Context, id string) error
+}
+
+// MemoryFlusher is an optional extension for stores that support context window flush.
+// v2: Extracts critical facts before context compaction to prevent information loss.
+type MemoryFlusher interface {
+	// FlushContext extracts and saves critical facts from a conversation
+	// before the context window is compacted.
+	FlushContext(ctx context.Context, conversation []Message) error
+
+	// WriteDailyNote appends an entry to today's daily notes file.
+	WriteDailyNote(ctx context.Context, entry string) error
 }
 
 // WorkflowStore is the port for task graph persistence.
@@ -203,11 +234,27 @@ type Gateway interface {
 }
 
 // SecretsManager is the port for retrieving credentials at runtime.
-// Adapter: GCP Secret Manager.
+// v2: Extended to support full CRUD for credentialed site research.
+// Adapters: macOS Keychain (default), GCP Secret Manager, env vars.
 type SecretsManager interface {
 	// Get retrieves the latest version of a secret by name.
 	Get(ctx context.Context, name string) (string, error)
+
+	// Store saves a credential. Overwrites if key exists.
+	// Optional — adapters that don't support writes return ErrNotSupported.
+	Store(ctx context.Context, key string, value []byte) error
+
+	// Delete removes a credential by key.
+	// Optional — adapters that don't support deletes return ErrNotSupported.
+	Delete(ctx context.Context, key string) error
+
+	// List returns all keys matching the prefix.
+	// Optional — adapters that don't support listing return ErrNotSupported.
+	List(ctx context.Context, prefix string) ([]string, error)
 }
+
+// ErrNotSupported is returned by SecretsManager adapters that don't support write operations.
+var ErrNotSupported = fmt.Errorf("operation not supported by this secrets backend")
 
 // AuditLogger is the port for structured audit logging.
 // Every tool call, model call, and workflow event is logged here.

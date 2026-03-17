@@ -22,7 +22,6 @@ import (
 	"github.com/jeremylerwick-max/zbot/internal/llm"
 	"github.com/jeremylerwick-max/zbot/internal/memory"
 	"github.com/jeremylerwick-max/zbot/internal/platform"
-	"github.com/jeremylerwick-max/zbot/internal/planner"
 	"github.com/jeremylerwick-max/zbot/internal/prompts"
 	"github.com/jeremylerwick-max/zbot/internal/scheduler"
 	"github.com/jeremylerwick-max/zbot/internal/scraper"
@@ -189,18 +188,10 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		logger.Info("LLM client ready (Anthropic)", "model", llmClient.ModelName())
 	}
 
-	// ── Planner + Critic (optional — only if OpenAI key is set) ─────────────
-	var taskPlanner *planner.Planner
-	var taskCritic *planner.Critic
-	if openaiKey, openaiErr := sm.Get(ctx, "openai-api-key"); openaiErr == nil && openaiKey != "" {
-		openaiClient := llm.NewOpenAIClient(openaiKey, "gpt-4o", logger)
-		taskPlanner = planner.New(openaiClient, logger)
-		taskPlanner.SetMemoryStore(memStore)
-		taskCritic = planner.NewCritic(openaiClient, logger)
-		logger.Info("planner + critic ready", "model", "gpt-4o")
-	} else {
-		logger.Info("planner/critic disabled — set ZBOT_OPENAI_API_KEY to enable")
-	}
+	// v2: Planner + Critic REMOVED — single-brain architecture.
+	// Claude handles planning via orchestrator.decompose() and self-critiques.
+	// OpenAI key is no longer required for core functionality.
+	logger.Info("v2: single-brain architecture — Claude handles planning + execution + self-critique")
 
 	// ── Scraper Stack (Sprint 4) ────────────────────────────────────────────
 	var proxyPool *scraper.ProxyPool
@@ -550,7 +541,6 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// ── Sprint 17: Slack Command Handler ─────────────────────────────────────
 	cmdHandler := &SlackCommands{
 		orch:          orch,
-		taskPlanner:   taskPlanner,
 		sched:         sched,
 		schedJobStore: schedJobStore,
 		researchOrch:  researchOrch,
@@ -614,41 +604,21 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			return reply, nil
 		}
 
-		// ── plan: <goal> — GPT-4o plans, Claude executes ─────────────────────
-		if strings.HasPrefix(trimmed, "plan: ") && taskPlanner != nil && orch != nil {
+		// ── plan: <goal> — v2: Claude decomposes + executes (single-brain) ──
+		if strings.HasPrefix(trimmed, "plan: ") && orch != nil {
 			goal := strings.TrimSpace(strings.TrimPrefix(trimmed, "plan: "))
 			if goal == "" {
-				return "Usage: `/plan <goal>`\nExample: `/plan research top 5 GoHighLevel competitors and write a comparison report`", nil
+				return "Usage: `plan: <goal>`\nExample: `plan: research top 5 GoHighLevel competitors and write a comparison report`", nil
 			}
 
-			logger.Info("plan requested", "goal", goal)
+			logger.Info("plan requested (v2 single-brain)", "goal", goal)
 
-			graph, planErr := taskPlanner.Plan(ctx, goal)
-			if planErr != nil {
-				return fmt.Sprintf("❌ Planning failed: %v", planErr), nil
-			}
-
-			wfID, submitErr := planner.Submit(ctx, orch.Store(), graph, sessionID)
+			wfID, submitErr := orch.Submit(ctx, sessionID, goal)
 			if submitErr != nil {
-				return fmt.Sprintf("❌ Failed to submit plan: %v", submitErr), nil
+				return fmt.Sprintf("❌ Failed to plan + submit: %v", submitErr), nil
 			}
 
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("🧠 *GPT-4o planned %d tasks for Claude to execute:*\n\n", len(graph.Tasks)))
-			for _, t := range graph.Tasks {
-				parallel := ""
-				if t.Parallel {
-					parallel = " _(parallel)_"
-				}
-				deps := ""
-				if len(t.DependsOn) > 0 {
-					deps = fmt.Sprintf(" _(after %v)_", t.DependsOn)
-				}
-				sb.WriteString(fmt.Sprintf("*%d. %s*%s%s\n_%s_\n\n", t.Priority, t.Title, parallel, deps, truncateStr(t.Instruction, 120)))
-			}
-			sb.WriteString(fmt.Sprintf("🚀 Workflow `%s` started — Claude is on it.\nTrack progress: `//status %s`", wfID, wfID))
-
-			return sb.String(), nil
+			return fmt.Sprintf("🧠 *Claude decomposed and started workflow:*\n\n🚀 Workflow `%s` started.\nTrack progress: `//status %s`", wfID, wfID), nil
 		}
 
 		// ── research: <goal> — deep multi-model research pipeline ──────────
@@ -687,11 +657,8 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			return fmt.Sprintf("🔬 *Deep Research started* — `%s`\nSession: `%s`\n\n5 AI models collaborating. Track: `/research status %s`\nUI: http://localhost:18790", goal, resID, resID[:12]), nil
 		}
 
-		// ── plan: without dependencies ────────────────────────────────────
-		if strings.HasPrefix(trimmed, "plan: ") && (taskPlanner == nil || orch == nil) {
-			if taskPlanner == nil {
-				return "❌ Planner not available — add `openai-api-key` to Secret Manager.", nil
-			}
+		// ── plan: without workflow engine ──────────────────────────────────
+		if strings.HasPrefix(trimmed, "plan: ") && orch == nil {
 			return "❌ Workflow engine not available — Postgres required.", nil
 		}
 
@@ -940,10 +907,7 @@ If no, respond with JSON: {"save": false}`, message, reply)
 			return reply, nil
 		})
 
-		// Sprint 11: Wire planner + orchestrator for dual-brain streaming.
-		if taskPlanner != nil {
-			webServer.SetPlanner(taskPlanner)
-		}
+		// v2: Wire orchestrator for single-brain workflow execution.
 		if orch != nil {
 			webServer.SetOrchestrator(orch)
 
@@ -959,50 +923,7 @@ If no, respond with JSON: {"save": false}`, message, reply)
 				})
 			})
 
-			// Sprint 11: Wire GPT-4o critic loop into orchestrator.
-			if taskCritic != nil {
-				orch.SetCriticFunc(func(ctx context.Context, workflowID, taskID, instruction, output string) (string, string, bool, error) {
-					// Publish "reviewing" event to SSE.
-					hub.Publish(webui.Event{
-						WorkflowID: workflowID,
-						TaskID:     taskID,
-						Source:     "critic",
-						Type:       "reviewing",
-						Payload:    "",
-					})
-
-					verdict, err := taskCritic.Review(ctx, taskID, instruction, output)
-					if err != nil {
-						return "", "", false, err
-					}
-
-					verdictJSON, _ := json.Marshal(verdict)
-
-					// Publish verdict event to SSE.
-					hub.Publish(webui.Event{
-						WorkflowID: workflowID,
-						TaskID:     taskID,
-						Source:     "critic",
-						Type:       "verdict",
-						Payload:    string(verdictJSON),
-					})
-
-					shouldRetry := verdict.Verdict == "fail" && verdict.CorrectedInstruction != ""
-
-					if shouldRetry {
-						// Publish retrying event to SSE.
-						hub.Publish(webui.Event{
-							WorkflowID: workflowID,
-							TaskID:     taskID,
-							Source:     "critic",
-							Type:       "status",
-							Payload:    "retrying",
-						})
-					}
-
-					return string(verdictJSON), verdict.CorrectedInstruction, shouldRetry, nil
-				})
-			}
+			// v2: Critic REMOVED — Claude self-critiques within the single-brain loop.
 		}
 
 		// Sprint 14: Wire scheduler + job store for schedule panel API.

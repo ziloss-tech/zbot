@@ -40,6 +40,22 @@ func (s *GCPSecretManager) Get(ctx context.Context, name string) (string, error)
 	return string(resp.Payload.Data), nil
 }
 
+// Store is not yet implemented for GCP Secret Manager.
+// v2: Will be implemented in Sprint C for credentialed site research.
+func (s *GCPSecretManager) Store(_ context.Context, _ string, _ []byte) error {
+	return agent.ErrNotSupported
+}
+
+// Delete is not yet implemented for GCP Secret Manager.
+func (s *GCPSecretManager) Delete(_ context.Context, _ string) error {
+	return agent.ErrNotSupported
+}
+
+// List is not yet implemented for GCP Secret Manager.
+func (s *GCPSecretManager) List(_ context.Context, _ string) ([]string, error) {
+	return nil, agent.ErrNotSupported
+}
+
 // Close releases the underlying gRPC connection.
 func (s *GCPSecretManager) Close() error {
 	return s.client.Close()

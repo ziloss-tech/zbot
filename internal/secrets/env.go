@@ -70,6 +70,21 @@ func (e *EnvSecretManager) Get(_ context.Context, name string) (string, error) {
 	return "", fmt.Errorf("secret %q not found in environment", name)
 }
 
+// Store is not supported by env var secrets.
+func (e *EnvSecretManager) Store(_ context.Context, _ string, _ []byte) error {
+	return agent.ErrNotSupported
+}
+
+// Delete is not supported by env var secrets.
+func (e *EnvSecretManager) Delete(_ context.Context, _ string) error {
+	return agent.ErrNotSupported
+}
+
+// List is not supported by env var secrets.
+func (e *EnvSecretManager) List(_ context.Context, _ string) ([]string, error) {
+	return nil, agent.ErrNotSupported
+}
+
 // Close is a no-op for env var secrets.
 func (e *EnvSecretManager) Close() error {
 	return nil
