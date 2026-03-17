@@ -35,7 +35,7 @@ function detectMode(val: string): 'plan' | 'research' | 'schedule' | 'chat' {
 }
 
 const modeConfig = {
-  plan:     { accent: 'text-openai',    border: 'border-openai/30',    glow: 'shadow-openai',   label: 'plan',     icon: '▸', placeholder: 'Describe what you want GPT-4o + Claude to build...' },
+  plan:     { accent: 'text-anthropic',  border: 'border-anthropic/30',  glow: 'shadow-anthropic', label: 'plan',     icon: '▸', placeholder: 'Describe what you want Claude to build...' },
   research: { accent: 'text-gemini',    border: 'border-gemini/30',    glow: 'shadow-gemini',   label: 'research', icon: '◎', placeholder: 'Deep research topic — pulls sources, synthesizes, reports...' },
   schedule: { accent: 'text-observer',  border: 'border-observer/30',  glow: 'shadow-observer', label: 'schedule', icon: '◷', placeholder: 'every morning at 9am check AI news...' },
   chat:     { accent: 'text-white/40',  border: 'border-white/[0.08]', glow: '',                label: '',         icon: '',  placeholder: '⌘K to focus · Type a goal or use plan: · research: · schedule:' },
@@ -143,7 +143,7 @@ export function CommandBar({ onSubmit, onChat, onResearch, isPlanning, isChattin
           {/* Busy progress bar */}
           {isPlanning && (
             <motion.div
-              className="absolute bottom-0 left-0 h-px rounded-full bg-gradient-to-r from-openai via-anthropic to-observer"
+              className="absolute bottom-0 left-0 h-px rounded-full bg-gradient-to-r from-anthropic/40 via-anthropic to-anthropic/40"
               initial={{ width: '0%', opacity: 0 }}
               animate={{ width: '100%', opacity: 1 }}
               transition={{ duration: 9, ease: 'linear' }}
@@ -159,7 +159,7 @@ export function CommandBar({ onSubmit, onChat, onResearch, isPlanning, isChattin
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.8 }}
                 className={`shrink-0 rounded-lg px-3 py-1.5 font-mono text-[11px] font-bold text-white transition-colors ${
-                  mode === 'plan'     ? 'bg-openai/80 hover:bg-openai' :
+                  mode === 'plan'     ? 'bg-anthropic/80 hover:bg-anthropic' :
                   mode === 'research' ? 'bg-gemini/60 hover:bg-gemini/80' :
                   mode === 'schedule' ? 'bg-observer/70 hover:bg-observer/90' :
                   'bg-white/[0.08] hover:bg-white/[0.12]'
