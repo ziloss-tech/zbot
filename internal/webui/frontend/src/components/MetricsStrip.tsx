@@ -15,7 +15,7 @@ export function MetricsStrip({ metrics }: MetricsStripProps) {
       <Divider />
       <Stat label="tasks" value={`${metrics.done_tasks}/${metrics.total_tasks}`} accent="text-white/50">
         {metrics.total_tasks > 0 && (
-          <span className="ml-1.5 font-mono text-[9px] text-openai/60">{taskPct}%</span>
+          <span className="ml-1.5 font-mono text-[9px] text-emerald-400/60">{taskPct}%</span>
         )}
       </Stat>
       <Divider />

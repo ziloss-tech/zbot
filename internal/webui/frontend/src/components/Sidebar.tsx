@@ -85,9 +85,9 @@ export function Sidebar({ activePage, onNavigate, workflowActive }: SidebarProps
       <div className="flex h-14 items-center border-b border-white/[0.04] px-3.5">
         <div className="flex items-center gap-2.5">
           <div className="flex gap-1 shrink-0">
-            <span className="h-1.5 w-1.5 rounded-full bg-openai" />
             <span className="h-1.5 w-1.5 rounded-full bg-anthropic" />
-            <span className="h-1.5 w-1.5 rounded-full bg-observer" />
+            <span className="h-1.5 w-1.5 rounded-full bg-anthropic/60" />
+            <span className="h-1.5 w-1.5 rounded-full bg-anthropic/30" />
           </div>
           <AnimatePresence>
             {expanded && (

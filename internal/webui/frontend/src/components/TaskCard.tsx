@@ -1,8 +1,29 @@
 import { useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { StatusBadge } from './StatusBadge'
-import { CriticBadge } from './CriticBadge'
-import type { TaskDetail } from '../lib/types'
+import type { TaskDetail, CriticIssue } from '../lib/types'
+
+// v2: Inline critic badge (CriticBadge.tsx deleted — critic is deprecated)
+function CriticBadge({ status, issues }: { status: string; issues?: CriticIssue[] }) {
+  const configs: Record<string, { label: string; color: string; icon: string }> = {
+    reviewing: { label: 'Reviewing...', color: 'bg-yellow-500/20 text-yellow-400', icon: '🔍' },
+    passed:    { label: 'Passed', color: 'bg-green-500/20 text-green-400', icon: '✓' },
+    failed:    { label: 'Retry', color: 'bg-red-500/20 text-red-400', icon: '✗' },
+    partial:   { label: 'Partial', color: 'bg-yellow-500/20 text-yellow-400', icon: '⚠' },
+    retrying:  { label: 'Retrying', color: 'bg-anthropic/20 text-anthropic', icon: '⟳' },
+  }
+  const cfg = configs[status]
+  if (!cfg) return null
+  return (
+    <span className={`flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] ${cfg.color}`}>
+      <span>{cfg.icon}</span>
+      <span>{cfg.label}</span>
+      {issues && issues.length > 0 && status !== 'reviewing' && status !== 'retrying' && (
+        <span className="rounded bg-black/20 px-1">{issues.length}</span>
+      )}
+    </span>
+  )
+}
 
 interface TaskCardProps {
   task: TaskDetail
@@ -83,7 +104,7 @@ export function TaskCard({ task, index, onViewFile }: TaskCardProps) {
             className="mb-2 rounded bg-executor/10 px-2 py-1"
           >
             <span className="font-mono text-[10px] text-executor">
-              ⟳ GPT-4o requested retry — corrected instruction applied
+              ⟳ Self-critique triggered retry — corrected instruction applied
             </span>
           </motion.div>
         )}

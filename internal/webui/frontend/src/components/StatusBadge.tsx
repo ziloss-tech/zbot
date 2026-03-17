@@ -7,11 +7,11 @@ interface StatusBadgeProps {
 
 const statusConfig: Record<string, { dot: string; text: string; label: string; pulse: boolean }> = {
   pending:  { dot: 'bg-white/20',    text: 'text-white/30',   label: 'pending',   pulse: false },
-  planning: { dot: 'bg-openai',      text: 'text-openai/80',  label: 'planning',  pulse: true  },
+  planning: { dot: 'bg-anthropic',   text: 'text-anthropic/80', label: 'planning', pulse: true  },
   running:  { dot: 'bg-anthropic',   text: 'text-anthropic/80', label: 'running', pulse: true  },
-  handoff:  { dot: 'bg-observer',    text: 'text-observer/80', label: 'handoff',  pulse: true  },
-  done:     { dot: 'bg-openai',      text: 'text-openai/70',  label: 'done',      pulse: false },
-  complete: { dot: 'bg-openai',      text: 'text-openai/70',  label: 'done',      pulse: false },
+  handoff:  { dot: 'bg-anthropic/60', text: 'text-anthropic/60', label: 'handoff', pulse: true  },
+  done:     { dot: 'bg-emerald-400', text: 'text-emerald-400/70', label: 'done',   pulse: false },
+  complete: { dot: 'bg-emerald-400', text: 'text-emerald-400/70', label: 'done',   pulse: false },
   failed:   { dot: 'bg-red-400',     text: 'text-red-400/80', label: 'failed',    pulse: false },
   canceled: { dot: 'bg-white/20',    text: 'text-white/25',   label: 'canceled',  pulse: false },
   error:    { dot: 'bg-red-400',     text: 'text-red-400/80', label: 'error',     pulse: false },

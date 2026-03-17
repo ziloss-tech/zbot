@@ -1,5 +1,5 @@
 import { useReducer, useCallback } from 'react'
-import type { SSEEvent, WorkflowState, PlannedTask, WorkflowPhase, CriticResult } from '../lib/types'
+import type { SSEEvent, WorkflowState, PlannedTask, WorkflowPhase, CriticResult, ToolCallEvent } from '../lib/types'
 
 type Action =
   | { type: 'START_PLAN'; id: string; goal: string }
@@ -14,6 +14,11 @@ const initialState: WorkflowState = {
   plannerTokens: '',
   plannedTasks: [],
   tasks: [],
+  // v2 single-brain state
+  agentTokens: '',
+  agentThinking: '',
+  modelTier: 'sonnet',
+  toolCalls: [],
 }
 
 function reducer(state: WorkflowState, action: Action): WorkflowState {
@@ -29,6 +34,85 @@ function reducer(state: WorkflowState, action: Action): WorkflowState {
     case 'SSE_EVENT': {
       const evt = action.event
 
+      // ─── v2: Single-brain agent events ─────────────────────────────
+      if (evt.source === 'agent') {
+        switch (evt.type) {
+          case 'thinking':
+            return {
+              ...state,
+              phase: state.phase === 'idle' ? 'executing' : state.phase,
+              agentThinking: state.agentThinking + evt.payload,
+            }
+          case 'token':
+            return {
+              ...state,
+              phase: 'executing',
+              agentTokens: state.agentTokens + evt.payload,
+              agentThinking: '', // clear thinking once tokens flow
+            }
+          case 'tool_use': {
+            let toolCall: ToolCallEvent | null = null
+            try {
+              toolCall = JSON.parse(evt.payload) as ToolCallEvent
+            } catch {
+              toolCall = { name: evt.payload, input: '', status: 'running' }
+            }
+            return {
+              ...state,
+              phase: 'executing',
+              toolCalls: [...state.toolCalls, toolCall],
+            }
+          }
+          case 'status': {
+            // Task status update from the single brain
+            const taskID = evt.task_id ?? ''
+            const existingIdx = state.tasks.findIndex((t) => t.id === taskID)
+            if (existingIdx >= 0) {
+              const updated = [...state.tasks]
+              const existing = updated[existingIdx]
+              if (existing) {
+                updated[existingIdx] = {
+                  ...existing,
+                  status: evt.payload as 'running' | 'pending' | 'done' | 'failed',
+                }
+              }
+              return { ...state, phase: 'executing', tasks: updated }
+            }
+            return {
+              ...state,
+              phase: 'executing',
+              tasks: [
+                ...state.tasks,
+                {
+                  id: taskID,
+                  step: state.tasks.length + 1,
+                  name: taskID,
+                  title: taskID,
+                  status: evt.payload as 'running',
+                  output: '',
+                  error: '',
+                  depends_on: [],
+                  tool_calls: [],
+                },
+              ],
+            }
+          }
+          case 'complete':
+            return {
+              ...state,
+              phase: 'complete',
+              agentThinking: '',
+            }
+          case 'error':
+            return {
+              ...state,
+              phase: 'error',
+              error: evt.payload,
+            }
+        }
+      }
+
+      // ─── Legacy v1: Planner events (backwards compat) ─────────────
       if (evt.source === 'planner') {
         switch (evt.type) {
           case 'token':
@@ -56,6 +140,7 @@ function reducer(state: WorkflowState, action: Action): WorkflowState {
         }
       }
 
+      // ─── Legacy v1: Executor events ───────────────────────────────
       if (evt.source === 'executor') {
         switch (evt.type) {
           case 'status': {
@@ -111,7 +196,7 @@ function reducer(state: WorkflowState, action: Action): WorkflowState {
         }
       }
 
-      // ─── Critic events ──────────────────────────────────────────────
+      // ─── Legacy v1: Critic events ─────────────────────────────────
       if (evt.source === 'critic') {
         const taskID = evt.task_id ?? ''
         switch (evt.type) {
