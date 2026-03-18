@@ -268,3 +268,56 @@ type AuditLogger interface {
 	// LogWorkflowEvent records a workflow lifecycle event.
 	LogWorkflowEvent(ctx context.Context, workflowID, taskID, event, detail string)
 }
+
+// ─── EVENT BUS ──────────────────────────────────────────────────────────────
+
+// EventType classifies agent events for the Thalamus oversight engine.
+type EventType string
+
+const (
+	EventTurnStart     EventType = "turn_start"
+	EventMemoryLoaded  EventType = "memory_loaded"
+	EventToolCalled    EventType = "tool_called"
+	EventToolResult    EventType = "tool_result"
+	EventToolError     EventType = "tool_error"
+	EventLLMCall       EventType = "llm_call"
+	EventLLMResult     EventType = "llm_result"
+	EventTurnComplete  EventType = "turn_complete"
+	EventCostUpdate    EventType = "cost_update"
+	EventFileRead      EventType = "file_read"
+	EventFileWrite     EventType = "file_write"
+	EventWebSearch     EventType = "web_search"
+	EventFetchURL      EventType = "fetch_url"
+	EventConfirmNeeded EventType = "confirm_needed"
+	EventSecurityFlag  EventType = "security_flag"
+)
+
+// AgentEvent is a structured event emitted by Cortex as it works.
+// Thalamus reads these — NOT raw LLM tokens — to observe at low cost.
+// Each event is ~50-100 tokens of metadata, not the full context.
+type AgentEvent struct {
+	ID        string            `json:"id"`
+	SessionID string            `json:"session_id"`
+	Type      EventType         `json:"type"`
+	Summary   string            `json:"summary"`     // human-readable one-liner
+	Detail    map[string]any    `json:"detail,omitempty"` // structured metadata
+	Timestamp time.Time         `json:"timestamp"`
+}
+
+// EventBus is the port for the agent event stream.
+// Cortex emits events; Thalamus and the UI consume them.
+// Implementations: in-memory channel bus (v0.1), Redis pub/sub (future).
+type EventBus interface {
+	// Emit publishes an event to all subscribers.
+	Emit(ctx context.Context, event AgentEvent)
+
+	// Subscribe returns a channel that receives events for a given session.
+	// The caller must close the subscription when done via Unsubscribe.
+	Subscribe(sessionID string) <-chan AgentEvent
+
+	// Unsubscribe removes a subscription.
+	Unsubscribe(sessionID string, ch <-chan AgentEvent)
+
+	// Recent returns the last N events for a session (for late-joining Thalamus).
+	Recent(sessionID string, n int) []AgentEvent
+}

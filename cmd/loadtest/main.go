@@ -43,7 +43,7 @@ func main() {
 	cfg := agent.DefaultConfig()
 	cfg.SystemPrompt = "You are a test agent."
 
-	ag := agent.New(cfg, mockLLM, memStore, auditLog, logger)
+	ag := agent.New(cfg, mockLLM, memStore, auditLog, agent.NewMemEventBus(50), logger)
 
 	// Capture memory stats before.
 	var memBefore runtime.MemStats

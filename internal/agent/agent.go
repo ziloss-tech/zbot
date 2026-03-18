@@ -67,6 +67,7 @@ type Agent struct {
 	memory       MemoryStore
 	tools        map[string]Tool
 	audit        AuditLogger
+	events       EventBus
 	logger       *slog.Logger
 	confirmStore *security.ConfirmationStore // Sprint 9: destructive op confirmation
 }
@@ -88,6 +89,7 @@ func New(
 	llm LLMClient,
 	memory MemoryStore,
 	audit AuditLogger,
+	events EventBus,
 	logger *slog.Logger,
 	tools ...Tool,
 ) *Agent {
@@ -101,6 +103,7 @@ func New(
 		memory: memory,
 		tools:  toolMap,
 		audit:  audit,
+		events: events,
 		logger: logger,
 	}
 }
@@ -147,6 +150,11 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 	}
 	a.logger.Info("agent turn start", logArgs...)
 
+	// Emit turn_start event for Thalamus / UI.
+	a.emit(ctx, input.SessionID, EventTurnStart, "Turn started", map[string]any{
+		"goal": input.UserMsg.Content,
+	})
+
 	// 0. Inject model hint into context if set.
 	if input.ModelHint != "" {
 		ctx = WithModelHint(ctx, input.ModelHint)
@@ -158,6 +166,11 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		// Memory failure is non-fatal — log and continue without it.
 		a.logger.Warn("memory search failed", "err", err)
 		facts = nil
+	}
+	if len(facts) > 0 {
+		a.emit(ctx, input.SessionID, EventMemoryLoaded,
+			fmt.Sprintf("Loaded %d memories", len(facts)),
+			map[string]any{"count": len(facts)})
 	}
 
 	// 2. Build the context window for this turn.
@@ -251,6 +264,14 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 	}
 	a.logger.Info("agent turn complete", completeArgs...)
 
+	// Emit turn_complete event for Thalamus / UI.
+	a.emit(ctx, input.SessionID, EventTurnComplete, "Turn complete", map[string]any{
+		"input_tokens":  output.InputTokens,
+		"output_tokens": output.OutputTokens,
+		"cost_usd":      costUSD,
+		"tools_used":    output.ToolsInvoked,
+	})
+
 	return output, nil
 }
 
@@ -296,6 +317,20 @@ func (a *Agent) buildSystemPrompt(facts []Fact) string {
 		memSection += fmt.Sprintf("- %s (saved: %s)\n", f.Content, f.CreatedAt.Format("2006-01-02"))
 	}
 	return base + memSection
+}
+
+// emit is a helper that publishes an event to the bus (nil-safe).
+func (a *Agent) emit(ctx context.Context, sessionID string, evtType EventType, summary string, detail map[string]any) {
+	if a.events == nil {
+		return
+	}
+	a.events.Emit(ctx, AgentEvent{
+		SessionID: sessionID,
+		Type:      evtType,
+		Summary:   summary,
+		Detail:    detail,
+		Timestamp: time.Now(),
+	})
 }
 
 // executeTools runs each tool call, returning results and any output files.
@@ -357,6 +392,11 @@ func (a *Agent) executeTools(
 			continue
 		}
 
+		// Emit tool_called event.
+		a.emit(ctx, sessionID, EventToolCalled, call.Name, map[string]any{
+			"tool": call.Name,
+		})
+
 		execStart := time.Now()
 
 		result, err := tool.Execute(ctx, call.Input)
@@ -374,6 +414,18 @@ func (a *Agent) executeTools(
 		result.ToolCallID = call.ID
 
 		a.audit.LogToolCall(ctx, sessionID, call.Name, call.Input, result, durationMs)
+
+		// Emit tool result/error event.
+		if result.IsError {
+			a.emit(ctx, sessionID, EventToolError, fmt.Sprintf("%s failed", call.Name), map[string]any{
+				"tool": call.Name, "duration_ms": durationMs,
+			})
+		} else {
+			a.emit(ctx, sessionID, EventToolResult, fmt.Sprintf("%s done", call.Name), map[string]any{
+				"tool": call.Name, "duration_ms": durationMs,
+			})
+		}
+
 		results = append(results, *result)
 	}
 

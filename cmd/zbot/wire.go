@@ -352,11 +352,15 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	agentCfg := agent.DefaultConfig()
 	agentCfg.SystemPrompt = prompts.ClaudeExecutorSystem + skillRegistry.SystemPromptAddendum()
 
+	// Event bus for Thalamus oversight + UI streaming.
+	eventBus := agent.NewMemEventBus(200)
+
 	ag := agent.New(
 		agentCfg,
 		llmClient,
 		memStore,
 		auditLog,
+		eventBus,
 		logger,
 		allTools...,
 	)
