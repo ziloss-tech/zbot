@@ -86,10 +86,13 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
     try {
       // Use streaming endpoint — shows tool calls as they happen,
       // then delivers the final reply.
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 120000) // 2 min timeout
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text }),
+        signal: controller.signal,
       })
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -99,6 +102,7 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
       const decoder = new TextDecoder()
       let buffer = ''
       let finalReply = ''
+      clearTimeout(timeoutId)
       setStreamEvents([])
 
       while (true) {
@@ -115,6 +119,8 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
             const evt = JSON.parse(line.slice(6))
             if (evt.type === 'done') {
               finalReply = evt.content
+            } else if (evt.type === 'error') {
+              finalReply = 'Error: ' + evt.content
             } else if (evt.type !== 'turn_complete') {
               setStreamEvents(prev => [...prev.slice(-8), { type: evt.type, content: evt.content }])
             }
