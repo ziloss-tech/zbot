@@ -112,7 +112,22 @@ export default function App() {
               isChatting={false}
             />
           </div>
-          <MetricsStrip metrics={metrics} />
+          <div className="flex items-center">
+            <MetricsStrip metrics={metrics} />
+            <div className="flex items-center gap-3 px-4 py-2 ml-auto border-l border-white/[0.03]">
+              <div className="flex items-center gap-1.5">
+                <span className={`h-1.5 w-1.5 rounded-full ${eventBus.cortexWorking ? 'bg-cyan-400 animate-pulse' : eventBus.connected ? 'bg-emerald-400' : 'bg-red-400'}`} />
+                <span className="font-mono text-[9px] text-white/30">
+                  {eventBus.cortexWorking ? 'Cortex working' : eventBus.connected ? 'Cortex online' : 'disconnected'}
+                </span>
+              </div>
+              {eventBus.recentTools.length > 0 && eventBus.cortexWorking && (
+                <span className="font-mono text-[9px] text-cyan-400/50">
+                  {eventBus.recentTools[eventBus.recentTools.length - 1]?.summary}
+                </span>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Pages */}
