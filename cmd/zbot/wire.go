@@ -97,6 +97,23 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	appToken, _ := sm.Get(ctx, "zbot-slack-app-token")
 	anthropicKey, _ := sm.Get(ctx, secrets.SecretAnthropicAPIKey)
 	braveKey, _ := sm.Get(ctx, secrets.SecretBraveAPIKey)
+	serperKey := os.Getenv("ZBOT_SERPER_API_KEY")
+	if serperKey == "" {
+		serperKey, _ = sm.Get(ctx, "serper-api-key")
+	}
+
+	// Pick the cheapest available search tool.
+	// Priority: Serper ($0.30/1K) > Brave ($5/1K)
+	var searchTool agent.Tool
+	if serperKey != "" {
+		searchTool = tools.NewSerperSearchTool(serperKey)
+		logger.Info("search provider: Serper (Google, $0.30/1K)")
+	} else if braveKey != "" {
+		searchTool = tools.NewWebSearchTool(braveKey)
+		logger.Info("search provider: Brave ($5/1K)")
+	} else {
+		logger.Warn("no search API key configured — web_search disabled")
+	}
 
 	// Check for configurable LLM backend (OpenAI-compatible: Ollama, Together, Groq, etc.)
 	llmBaseURL := os.Getenv("ZBOT_LLM_BASE_URL")
@@ -281,7 +298,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 
 	// ── Core Tools ──────────────────────────────────────────────────────────
 	coreTools := []agent.Tool{
-		tools.NewWebSearchTool(braveKey),
+		searchTool,
 		tools.NewFetchURLToolFull(proxyPool, rateLimiter, scrapeCache, browserFetcher),
 		tools.NewCredentialedFetchTool(sm, siteCredentials, proxyPool, rateLimiter, scrapeCache, logger),
 		tools.NewManageCredentialsTool(sm, logger), // Sprint C stretch: credential CRUD
@@ -478,7 +495,6 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		synthesizerClient := llmClient // Claude Sonnet 4.6
 
 		// Search tool for the searcher agent.
-		searchTool := tools.NewWebSearchTool(braveKey)
 
 		// Research store + budget tracker.
 		rStore, rsErr := research.NewPGResearchStore(ctx, pgDB)
@@ -535,7 +551,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		researchOrchV2 = research.NewV2ResearchOrchestrator(
 			haikuClient,
 			llmClient, // Sonnet
-			tools.NewWebSearchTool(braveKey),
+			searchTool,
 			memStore,
 			claimMem,
 			researchStore,
