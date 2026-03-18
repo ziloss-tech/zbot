@@ -177,6 +177,7 @@ func (s *Server) routes() {
 
 	// Sprint 12 — Quick Chat API.
 	s.mux.HandleFunc("/api/chat", s.handleQuickChatAPI)
+	s.mux.HandleFunc("/api/chat/stream", s.handleChatStreamAPI)
 	s.mux.HandleFunc("/api/events/", s.handleEventBusSSE)
 
 	// Sprint 20 — Persistent Claude Chat.

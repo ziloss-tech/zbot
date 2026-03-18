@@ -83,20 +83,57 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
     setLoading(true)
 
     try {
-      const res = await sendChat(text)
-      const assistantMsg: ChatMessage = {
-        id: `assistant-${Date.now()}`,
-        role: 'assistant',
-        content: res.reply,
-        timestamp: Date.now(),
-        modelTier: workflowState.modelTier,
+      // Use streaming endpoint — shows tool calls as they happen,
+      // then delivers the final reply.
+      const res = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text }),
+      })
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.body) throw new Error('No response body')
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let finalReply = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const evt = JSON.parse(line.slice(6))
+            if (evt.type === 'done') {
+              finalReply = evt.content
+            }
+            // Tool events are already handled by the event bus SSE
+          } catch { /* ignore parse errors */ }
+        }
       }
-      setMessages((prev) => [...prev, assistantMsg])
+
+      if (finalReply) {
+        const assistantMsg: ChatMessage = {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: finalReply,
+          timestamp: Date.now(),
+          modelTier: workflowState.modelTier,
+        }
+        setMessages((prev) => [...prev, assistantMsg])
+      }
     } catch {
       const errorMsg: ChatMessage = {
         id: `error-${Date.now()}`,
         role: 'assistant',
-        content: 'Error reaching ZBOT.',
+        content: 'Error reaching Cortex.',
         timestamp: Date.now(),
       }
       setMessages((prev) => [...prev, errorMsg])
