@@ -56,6 +56,7 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [streamEvents, setStreamEvents] = useState<Array<{type: string, content: string}>>([])
   const endRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -98,6 +99,7 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
       const decoder = new TextDecoder()
       let buffer = ''
       let finalReply = ''
+      setStreamEvents([])
 
       while (true) {
         const { done, value } = await reader.read()
@@ -113,11 +115,13 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
             const evt = JSON.parse(line.slice(6))
             if (evt.type === 'done') {
               finalReply = evt.content
+            } else if (evt.type !== 'turn_complete') {
+              setStreamEvents(prev => [...prev.slice(-8), { type: evt.type, content: evt.content }])
             }
-            // Tool events are already handled by the event bus SSE
           } catch { /* ignore parse errors */ }
         }
       }
+      setStreamEvents([])
 
       if (finalReply) {
         const assistantMsg: ChatMessage = {
@@ -327,23 +331,58 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
           </motion.div>
         )}
 
-        {/* Loading indicator */}
+        {/* Live activity indicator during streaming */}
         {loading && (
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="rounded-lg border border-white/[0.04] bg-white/[0.02] p-3 mr-4"
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.03] p-3 mr-4"
           >
-            <div className="flex gap-1">
-              {[0, 1, 2].map((i) => (
-                <motion.span
-                  key={i}
-                  className="h-1.5 w-1.5 rounded-full bg-white/30"
-                  animate={{ opacity: [0.3, 1, 0.3] }}
-                  transition={{ duration: 0.9, delay: i * 0.2, repeat: Infinity }}
-                />
-              ))}
+            <div className="flex items-center gap-2 mb-2">
+              <motion.span
+                className="h-2 w-2 rounded-full bg-cyan-400"
+                animate={{ opacity: [1, 0.3, 1] }}
+                transition={{ duration: 1, repeat: Infinity }}
+              />
+              <span className="font-mono text-[10px] text-cyan-400/70 uppercase tracking-wider">Cortex working</span>
             </div>
+            {streamEvents.length > 0 ? (
+              <div className="space-y-1">
+                {streamEvents.map((evt, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, x: -4 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="flex items-center gap-2"
+                  >
+                    <span className={`font-mono text-[10px] ${
+                      evt.type === 'tool_called' ? 'text-cyan-400/60' :
+                      evt.type === 'tool_result' ? 'text-emerald-400/60' :
+                      evt.type === 'tool_error' ? 'text-red-400/60' :
+                      'text-white/30'
+                    }`}>
+                      {evt.type === 'tool_called' ? '⟳' :
+                       evt.type === 'tool_result' ? '✓' :
+                       evt.type === 'tool_error' ? '✗' :
+                       evt.type === 'turn_start' ? '→' :
+                       evt.type === 'memory_loaded' ? '🧠' : '·'}
+                    </span>
+                    <span className="font-mono text-[10px] text-white/40">{evt.content}</span>
+                  </motion.div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex gap-1">
+                {[0, 1, 2].map((i) => (
+                  <motion.span
+                    key={i}
+                    className="h-1 w-1 rounded-full bg-cyan-400/40"
+                    animate={{ opacity: [0.3, 1, 0.3] }}
+                    transition={{ duration: 0.9, delay: i * 0.2, repeat: Infinity }}
+                  />
+                ))}
+              </div>
+            )}
           </motion.div>
         )}
 
