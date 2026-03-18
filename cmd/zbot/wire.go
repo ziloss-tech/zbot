@@ -904,6 +904,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// v2: Wire agentic quick chat — uses full agent.Run() with tool use + event bus.
 	// Works with or without Postgres (memory degrades gracefully).
 	webServer.SetEventBus(eventBus)
+	webServer.SetLLMClient(llmClient)
 	// In-memory conversation history for web chat sessions.
 	// Keeps the last 20 exchanges (40 messages) per session.
 	type convEntry struct {
