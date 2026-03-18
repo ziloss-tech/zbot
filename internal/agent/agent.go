@@ -277,13 +277,23 @@ func (a *Agent) buildContext(input TurnInput, facts []Fact) []Message {
 // buildSystemPrompt constructs the system prompt, injecting relevant memories.
 func (a *Agent) buildSystemPrompt(facts []Fact) string {
 	base := a.cfg.SystemPrompt
+
+	// Inject temporal awareness — the model needs to know when "now" is
+	// for time-relative reasoning (yesterday, next week, how long ago, etc.)
+	now := time.Now()
+	temporal := fmt.Sprintf("\n\n## Current Time\nCurrent date and time: %s\nTimezone: %s\nDay of week: %s",
+		now.Format("2006-01-02 15:04:05"),
+		now.Format("MST"),
+		now.Format("Monday"))
+	base += temporal
+
 	if len(facts) == 0 {
 		return base
 	}
 
 	memSection := "\n\n## Relevant Memory\n"
 	for _, f := range facts {
-		memSection += fmt.Sprintf("- %s\n", f.Content)
+		memSection += fmt.Sprintf("- %s (saved: %s)\n", f.Content, f.CreatedAt.Format("2006-01-02"))
 	}
 	return base + memSection
 }
