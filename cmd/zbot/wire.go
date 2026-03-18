@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -882,105 +881,33 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	go webhookGW.Start(ctx)
 	logger.Info("webhook gateway ready", "port", 18791)
 
-	// ── Cheap LLM for background tasks (fact extraction, etc.) ──────────────
-	// In OpenAI-compat mode, reuse the same model for everything.
-	var haikuForChat agent.LLMClient
-	if useOpenAICompat {
-		haikuForChat = llmClient // same model — open models are already cheap
-	} else {
-		haikuForChat = llm.NewHaikuClient(anthropicKey, logger)
-	}
-
 	// ── Web UI (Sprint 8 + Sprint 11 Dual Brain Command Center) ─────────────
 	// Always start web UI so Cloud Run health checks pass (pgDB may be nil).
 	webServer = webui.New(pgDB, logger)
 
+	// v2: Wire agentic quick chat — uses full agent.Run() with tool use + event bus.
+	// Works with or without Postgres (memory degrades gracefully).
+	webServer.SetQuickChat(func(ctx context.Context, message string) (string, error) {
+		turnInput := agent.TurnInput{
+			SessionID: "web-chat",
+			UserMsg: agent.Message{
+				Role:      agent.RoleUser,
+				Content:   message,
+				CreatedAt: time.Now(),
+			},
+		}
+
+		result, err := ag.Run(ctx, turnInput)
+		if err != nil {
+			return "", fmt.Errorf("agent.Run: %w", err)
+		}
+
+		return result.Reply, nil
+	})
+
 	if pgDB != nil {
 		// Sprint 12: Wire memory store for memory panel API.
 		webServer.SetMemoryStore(memStore)
-
-		// Sprint 12: Wire memory-aware quick chat handler.
-		webServer.SetQuickChat(func(ctx context.Context, message string) (string, error) {
-			// 1. Search memory for context relevant to the message.
-			memContext := ""
-			if facts, memErr := memStore.Search(ctx, message, 5); memErr == nil && len(facts) > 0 {
-				memContext = "\n\n## What You Remember About Jeremy\n"
-				for _, f := range facts {
-					memContext += fmt.Sprintf("- %s\n", f.Content)
-				}
-				logger.Info("quick chat: injected memory context", "facts", len(facts))
-			}
-
-			// 2. Call Claude with memory-augmented system prompt.
-			chatSystemPrompt := systemPrompt + skillRegistry.SystemPromptAddendum() + memContext
-			chatMessages := []agent.Message{
-				{Role: agent.RoleSystem, Content: chatSystemPrompt},
-				{Role: agent.RoleUser, Content: message, CreatedAt: time.Now()},
-			}
-
-			result, err := llmClient.Complete(ctx, chatMessages, nil)
-			if err != nil {
-				return "", fmt.Errorf("quick chat llm: %w", err)
-			}
-
-			reply := result.Content
-
-			// 3. Check if response contains a saveable fact (via Haiku — cheap).
-			go func() {
-				factCheckPrompt := fmt.Sprintf(`User said: %q
-Assistant replied: %q
-
-Does this conversation contain a fact worth saving to long-term memory about the user or their business?
-If yes, respond with JSON: {"save": true, "fact": "the fact to save"}
-If no, respond with JSON: {"save": false}`, message, reply)
-
-				factCheckCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-
-				factResult, factErr := haikuForChat.Complete(factCheckCtx, []agent.Message{
-					{Role: agent.RoleUser, Content: factCheckPrompt},
-				}, nil)
-				if factErr != nil {
-					return
-				}
-
-				// Parse the fact check response.
-				var factCheck struct {
-					Save bool   `json:"save"`
-					Fact string `json:"fact"`
-				}
-				raw := factResult.Content
-				// Find JSON in response.
-				start := -1
-				end := -1
-				for i, c := range raw {
-					if c == '{' && start == -1 {
-						start = i
-					}
-					if c == '}' {
-						end = i + 1
-					}
-				}
-				if start >= 0 && end > start {
-					if jsonErr := json.Unmarshal([]byte(raw[start:end]), &factCheck); jsonErr == nil && factCheck.Save && factCheck.Fact != "" {
-						b := make([]byte, 8)
-						rand.Read(b)
-						fact := agent.Fact{
-							ID:        hex.EncodeToString(b),
-							Content:   factCheck.Fact,
-							Source:    "quick_chat",
-							Tags:      []string{"personal"},
-							CreatedAt: time.Now(),
-						}
-						if saveErr := memStore.Save(factCheckCtx, fact); saveErr == nil {
-							logger.Info("quick chat: auto-saved fact", "fact", factCheck.Fact)
-						}
-					}
-				}
-			}()
-
-			return reply, nil
-		})
 
 		// v2: Wire orchestrator for single-brain workflow execution.
 		if orch != nil {
