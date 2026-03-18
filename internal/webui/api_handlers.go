@@ -74,6 +74,10 @@ func (s *Server) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 
 // replayEvents sends stored stream events from Postgres for SSE reconnect.
 func (s *Server) replayEvents(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, workflowID string) {
+	// Guard: skip replay if no Postgres connection.
+	if s.db == nil {
+		return
+	}
 	rows, err := s.db.Query(ctx,
 		`SELECT workflow_id, COALESCE(task_id, ''), source, event_type, payload
 		 FROM zbot_stream_events
@@ -372,6 +376,19 @@ func (s *Server) handleMetricsAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	metrics := map[string]any{}
+
+	// Guard: return empty metrics if no Postgres connection.
+	if s.db == nil {
+		metrics["active_workflows"] = 0
+		metrics["total_tasks"] = 0
+		metrics["done_tasks"] = 0
+		metrics["tokens_today"] = 0
+		metrics["cost_today"] = "$0.00"
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		json.NewEncoder(w).Encode(metrics)
+		return
+	}
 
 	var activeCount int
 	s.db.QueryRow(r.Context(),
