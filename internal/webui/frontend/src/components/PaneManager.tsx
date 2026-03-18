@@ -4,6 +4,7 @@ import { ChatPane } from './ChatPane'
 import { ThalamusPane } from './ThalamusPane'
 import { WorkflowHistory } from './WorkflowHistory'
 import type { WorkflowState } from '../lib/types'
+import type { AgentEvent } from '../hooks/useEventBus'
 
 // ─── Pane Registry ──────────────────────────────────────────────────────────
 
@@ -161,12 +162,21 @@ function FilesPane() {
 
 // ─── Pane Manager ───────────────────────────────────────────────────────────
 
+interface EventBusState {
+  events: AgentEvent[]
+  connected: boolean
+  cortexWorking: boolean
+  recentTools: AgentEvent[]
+  clearEvents: () => void
+}
+
 interface PaneManagerProps {
   workflowState: WorkflowState
   onViewFile?: (path: string) => void
+  eventBus?: EventBusState
 }
 
-export function PaneManager({ workflowState, onViewFile: _onViewFile }: PaneManagerProps) {
+export function PaneManager({ workflowState, onViewFile: _onViewFile, eventBus }: PaneManagerProps) {
   void _onViewFile // reserved for future file preview integration
   const [panes, setPanes] = useState<PaneConfig[]>([
     createPane('chat'),
@@ -175,10 +185,10 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile }: PaneMana
   const containerRef = useRef<HTMLDivElement>(null)
 
   // ─── Auto-split: open Thalamus when Cortex starts working ───────────────
-  const prevPhaseRef = useRef(workflowState.phase)
+  const prevPhaseRef = useRef(false)
   useEffect(() => {
-    const wasIdle = prevPhaseRef.current === 'idle'
-    const nowWorking = workflowState.phase === 'executing' || workflowState.phase === 'planning'
+    const wasIdle = !prevPhaseRef.current
+    const nowWorking = eventBus?.cortexWorking ?? (workflowState.phase === 'executing' || workflowState.phase === 'planning')
     const hasThalamus = panes.some(p => p.type === 'thalamus')
 
     // Auto-open Thalamus when work begins
@@ -196,8 +206,8 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile }: PaneMana
     //   removePane(panes.find(p => p.type === 'thalamus')?.id || '')
     // }
 
-    prevPhaseRef.current = workflowState.phase
-  }, [workflowState.phase, panes])
+    prevPhaseRef.current = eventBus?.cortexWorking ?? (workflowState.phase !== 'idle')
+  }, [workflowState.phase, eventBus?.cortexWorking, panes])
 
 
   const addPane = useCallback((type: PaneType) => {

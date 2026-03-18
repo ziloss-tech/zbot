@@ -13,6 +13,7 @@ import { Sidebar } from './components/Sidebar'
 import { DashboardPage } from './components/DashboardPage'
 import { KnowledgeBasePage } from './components/KnowledgeBasePage'
 import { useSSE } from './hooks/useSSE'
+import { useEventBus } from './hooks/useEventBus'
 import { useWorkflow } from './hooks/useWorkflow'
 import { useMetrics } from './hooks/useMetrics'
 import { submitPlan } from './lib/api'
@@ -23,6 +24,12 @@ export default function App() {
   const { state, startPlan, handleSSEEvent } = useWorkflow()
   const [reconnecting, setReconnecting] = useState(false)
   const metrics = useMetrics()
+  const eventBus = useEventBus({ sessionID: 'web-chat' })
+
+  // Sync event bus to window for ChatPane live event strip.
+  useEffect(() => {
+    (window as any).__zbotEvents = eventBus.events
+  }, [eventBus.events])
 
   const [activePage, setActivePage] = useState<NavPage>('workflows')
 
@@ -129,6 +136,7 @@ export default function App() {
                 <PaneManager
                   workflowState={state}
                   onViewFile={setPreviewFile}
+                  eventBus={eventBus}
                 />
               </motion.div>
             )}

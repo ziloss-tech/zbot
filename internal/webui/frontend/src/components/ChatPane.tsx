@@ -169,6 +169,34 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
         )}
       </AnimatePresence>
 
+      {/* Live event bus strip — shows real-time Cortex activity */}
+      <AnimatePresence>
+        {(window as any).__zbotEvents?.length > 0 && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden border-b border-cyan-500/20 bg-cyan-500/[0.03]"
+          >
+            <div className="flex items-center gap-2 px-4 py-2 overflow-x-auto">
+              <span className="font-mono text-[9px] text-cyan-400/40 uppercase tracking-widest shrink-0">cortex</span>
+              {((window as any).__zbotEvents || []).slice(-3).map((evt: any, i: number) => (
+                <div key={i} className="flex items-center gap-1.5 rounded-md border border-cyan-500/15 bg-cyan-500/[0.04] px-2 py-1">
+                  <span className={`font-mono text-[10px] ${
+                    evt.type === 'tool_error' ? 'text-red-400' :
+                    evt.type === 'tool_result' ? 'text-emerald-400' :
+                    'text-cyan-400/60'
+                  }`}>
+                    {evt.type === 'tool_called' ? '⟳' : evt.type === 'tool_result' ? '✓' : evt.type === 'tool_error' ? '✗' : '→'}
+                  </span>
+                  <span className="font-mono text-[10px] text-white/50">{evt.summary}</span>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Tool calls strip */}
       <AnimatePresence>
         {workflowState.toolCalls.length > 0 && workflowState.toolCalls.some(t => t.status === 'running') && (

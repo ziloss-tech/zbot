@@ -49,6 +49,7 @@ type Server struct {
 	notifyChannelID string                        // Deep Research: channel/DM to notify
 	// Sprint 20: Persistent Claude chat (Slack ↔ UI).
 	chatStore      *ChatStore
+	eventBus       agent.EventBus
 	persistentChat PersistentChatFunc
 }
 
@@ -78,6 +79,11 @@ func (s *Server) SetMemoryStore(mem agent.MemoryStore) {
 // SetQuickChat sets the handler for memory-aware quick chat messages.
 func (s *Server) SetQuickChat(fn QuickChatFunc) {
 	s.quickChat = fn
+}
+
+// SetEventBus sets the event bus for real-time SSE streaming to the UI.
+func (s *Server) SetEventBus(eb agent.EventBus) {
+	s.eventBus = eb
 }
 
 // SetScheduler sets the scheduler for the schedule panel API.
@@ -171,6 +177,7 @@ func (s *Server) routes() {
 
 	// Sprint 12 — Quick Chat API.
 	s.mux.HandleFunc("/api/chat", s.handleQuickChatAPI)
+	s.mux.HandleFunc("/api/events/", s.handleEventBusSSE)
 
 	// Sprint 20 — Persistent Claude Chat.
 	s.mux.HandleFunc("/api/claude/chat", s.handleClaudeChatAPI)

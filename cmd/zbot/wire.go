@@ -903,6 +903,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 
 	// v2: Wire agentic quick chat — uses full agent.Run() with tool use + event bus.
 	// Works with or without Postgres (memory degrades gracefully).
+	webServer.SetEventBus(eventBus)
 	webServer.SetQuickChat(func(ctx context.Context, message string) (string, error) {
 		turnInput := agent.TurnInput{
 			SessionID: "web-chat",
