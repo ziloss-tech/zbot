@@ -2,7 +2,7 @@
 
 Your AI agent, your hardware, your data. Run any model — Llama, Mistral, Qwen, DeepSeek, Claude, GPT — through a single interface with persistent memory, tool use, deep research, and a web UI.
 
-![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go) ![License](https://img.shields.io/badge/license-MIT-green) ![Docker](https://img.shields.io/badge/docker-ready-blue?logo=docker) ![Claude](https://img.shields.io/badge/Claude-Sonnet_4.6-blueviolet?logo=anthropic)
+![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go) ![License](https://img.shields.io/badge/license-Apache_2.0-blue) ![Docker](https://img.shields.io/badge/docker-ready-blue?logo=docker) ![Claude](https://img.shields.io/badge/Claude-Sonnet_4.6-blueviolet?logo=anthropic)
 
 ## Why ZBOT?
 
@@ -247,7 +247,7 @@ internal/
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache 2.0 — see [LICENSE](LICENSE).
 
 ## Contributing
 
