@@ -904,9 +904,28 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// v2: Wire agentic quick chat — uses full agent.Run() with tool use + event bus.
 	// Works with or without Postgres (memory degrades gracefully).
 	webServer.SetEventBus(eventBus)
+	// In-memory conversation history for web chat sessions.
+	// Keeps the last 20 exchanges (40 messages) per session.
+	type convEntry struct {
+		msgs []agent.Message
+	}
+	convHistory := make(map[string]*convEntry)
+	var convMu sync.Mutex
+	const maxHistory = 40 // 20 user + 20 assistant messages
+
 	webServer.SetQuickChat(func(ctx context.Context, message string) (string, error) {
+		sessionID := "web-chat"
+
+		convMu.Lock()
+		if convHistory[sessionID] == nil {
+			convHistory[sessionID] = &convEntry{}
+		}
+		history := convHistory[sessionID]
+		convMu.Unlock()
+
 		turnInput := agent.TurnInput{
-			SessionID: "web-chat",
+			SessionID: sessionID,
+			History:   history.msgs,
 			UserMsg: agent.Message{
 				Role:      agent.RoleUser,
 				Content:   message,
@@ -918,6 +937,18 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		if err != nil {
 			return "", fmt.Errorf("agent.Run: %w", err)
 		}
+
+		// Append this exchange to history.
+		convMu.Lock()
+		history.msgs = append(history.msgs,
+			agent.Message{Role: agent.RoleUser, Content: message, CreatedAt: time.Now()},
+			agent.Message{Role: agent.RoleAssistant, Content: result.Reply, CreatedAt: time.Now()},
+		)
+		// Trim to keep last maxHistory messages.
+		if len(history.msgs) > maxHistory {
+			history.msgs = history.msgs[len(history.msgs)-maxHistory:]
+		}
+		convMu.Unlock()
 
 		return result.Reply, nil
 	})
