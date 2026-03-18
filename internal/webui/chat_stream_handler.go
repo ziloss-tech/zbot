@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 )
 
 // chatStreamEvent represents one SSE event in the chat stream.
@@ -14,11 +15,6 @@ type chatStreamEvent struct {
 }
 
 // handleChatStreamAPI handles POST /api/chat/stream — streaming agentic chat.
-// Instead of waiting for the full response, this endpoint:
-// 1. Runs agent.Run() in a goroutine
-// 2. Streams event bus events as they happen (tool calls, etc.)
-// 3. Streams the final reply as a "done" event
-// The frontend subscribes to this via EventSource-like fetch + ReadableStream.
 func (s *Server) handleChatStreamAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -47,7 +43,7 @@ func (s *Server) handleChatStreamAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set SSE headers for streaming response.
+	// Set SSE headers.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -60,28 +56,40 @@ func (s *Server) handleChatStreamAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Subscribe to event bus for this session to relay tool events.
-	var eventCh <-chan any
+	// Thread-safe SSE writer — protects against concurrent writes
+	// from the event relay goroutine and the main handler.
+	var writeMu sync.Mutex
+	closed := false
+
+	writeSSE := func(evt chatStreamEvent) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if closed {
+			return
+		}
+		data, _ := json.Marshal(evt)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	// Subscribe to event bus for real-time tool events.
+	doneCh := make(chan struct{})
 	if s.eventBus != nil {
 		ch := s.eventBus.Subscribe("web-chat")
-		defer s.eventBus.Unsubscribe("web-chat", ch)
 
-		// Relay events in background until chat completes.
-		doneCh := make(chan struct{})
 		go func() {
+			defer s.eventBus.Unsubscribe("web-chat", ch)
 			for {
 				select {
 				case evt, ok := <-ch:
 					if !ok {
 						return
 					}
-					data, _ := json.Marshal(chatStreamEvent{
+					writeSSE(chatStreamEvent{
 						Type:    string(evt.Type),
 						Content: evt.Summary,
 						Detail:  evt.Detail,
 					})
-					fmt.Fprintf(w, "data: %s\n\n", data)
-					flusher.Flush()
 				case <-doneCh:
 					return
 				case <-r.Context().Done():
@@ -89,28 +97,27 @@ func (s *Server) handleChatStreamAPI(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}()
-		defer close(doneCh)
-		_ = eventCh // suppress unused
 	}
 
-	// Run the full agent loop (synchronous — tool calls happen here).
+	// Run the full agent loop.
 	reply, err := s.quickChat(r.Context(), req.Message)
 
+	// Signal the relay goroutine to stop BEFORE writing final events.
+	close(doneCh)
+
 	if err != nil {
-		data, _ := json.Marshal(chatStreamEvent{
-			Type:    "error",
-			Content: err.Error(),
-		})
-		fmt.Fprintf(w, "data: %s\n\n", data)
-		flusher.Flush()
+		writeSSE(chatStreamEvent{Type: "error", Content: err.Error()})
+		writeMu.Lock()
+		closed = true
+		writeMu.Unlock()
 		return
 	}
 
 	// Send the final reply.
-	data, _ := json.Marshal(chatStreamEvent{
-		Type:    "done",
-		Content: reply,
-	})
-	fmt.Fprintf(w, "data: %s\n\n", data)
-	flusher.Flush()
+	writeSSE(chatStreamEvent{Type: "done", Content: reply})
+
+	// Mark closed so no more writes happen.
+	writeMu.Lock()
+	closed = true
+	writeMu.Unlock()
 }
