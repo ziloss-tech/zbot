@@ -43,6 +43,28 @@ Fetch content from authenticated sites without exposing credentials:
 - **Credential scrubber** — regex-based log redaction ensures passwords never appear in logs, memory, or conversation history
 - **Agent tool** — "Z, add my WSJ login" → ZBOT asks for credentials → stores securely → done
 
+## Cognitive Architecture
+
+ZBOT maps its components to brain regions — not as metaphor, but as an architectural pattern where each component has distinct execution characteristics and cost profiles.
+
+| Region | Role | Cost | Implementation |
+|--------|------|------|----------------|
+| **Cortex** | Primary reasoning engine | Main cost center | `internal/agent/agent.go` |
+| **Hippocampus** | Persistent memory | 0 LLM tokens | `internal/memory/pgvector.go` |
+| **Thalamus** | Oversight engine | 5-15% overhead (lazy) | `ThalamusPane.tsx` + event bus |
+| **Amygdala** | Safety & drift detection | 0 LLM tokens | `internal/security/` |
+| **Cerebellum** | Tool execution | 0 LLM tokens | `internal/tools/` |
+| **Frontal Lobe** | Executive planner (v0.2) | ~200 tokens | Planned |
+
+**The event bus** connects all regions. Cortex emits ~50-token structured events as it works. Thalamus reads these — not raw tokens — to observe at low cost. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full cognitive loop specification.
+
+**Cost-optimized stacks:**
+- **Frontier**: Claude Sonnet 4.6 + Brave Search → ~$0.07/query
+- **Budget**: Grok 4.1 Fast + Serper → ~$0.004/query (18x cheaper)
+- **Local**: Ollama + Serper → ~$0.0003/query (effectively free)
+
+*Pro athlete performance for pickup game prices.*
+
 ## Quick Start
 
 ### Option 1: Ollama (fully local, free)
