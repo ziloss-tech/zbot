@@ -1,12 +1,13 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChatPane } from './ChatPane'
+import { ThalamusPane } from './ThalamusPane'
 import { WorkflowHistory } from './WorkflowHistory'
 import type { WorkflowState } from '../lib/types'
 
 // ─── Pane Registry ──────────────────────────────────────────────────────────
 
-export type PaneType = 'chat' | 'tasks' | 'history' | 'files'
+export type PaneType = 'chat' | 'cortex' | 'thalamus' | 'tasks' | 'history' | 'files'
 
 interface PaneConfig {
   id: string
@@ -16,10 +17,12 @@ interface PaneConfig {
 }
 
 const PANE_TEMPLATES: Record<PaneType, Omit<PaneConfig, 'id'>> = {
-  chat:    { type: 'chat',    label: 'Chat',     icon: '💬' },
-  tasks:   { type: 'tasks',   label: 'Tasks',    icon: '📋' },
-  history: { type: 'history', label: 'History',   icon: '📜' },
-  files:   { type: 'files',   label: 'Files',    icon: '📁' },
+  chat:      { type: 'chat',      label: 'Chat',      icon: '💬' },
+  cortex:    { type: 'cortex',    label: 'Cortex',    icon: '🧠' },
+  thalamus:  { type: 'thalamus',  label: 'Thalamus',  icon: '👁' },
+  tasks:     { type: 'tasks',     label: 'Tasks',     icon: '📋' },
+  history:   { type: 'history',   label: 'History',   icon: '📜' },
+  files:     { type: 'files',     label: 'Files',     icon: '📁' },
 }
 
 let paneCounter = 0
@@ -171,6 +174,32 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile }: PaneMana
   const [widths, setWidths] = useState<number[]>([100])
   const containerRef = useRef<HTMLDivElement>(null)
 
+  // ─── Auto-split: open Thalamus when Cortex starts working ───────────────
+  const prevPhaseRef = useRef(workflowState.phase)
+  useEffect(() => {
+    const wasIdle = prevPhaseRef.current === 'idle'
+    const nowWorking = workflowState.phase === 'executing' || workflowState.phase === 'planning'
+    const hasThalamus = panes.some(p => p.type === 'thalamus')
+
+    // Auto-open Thalamus when work begins
+    if (wasIdle && nowWorking && !hasThalamus) {
+      setPanes(prev => {
+        const newPanes = [...prev, createPane('thalamus')]
+        setWidths([58, 42]) // Cortex gets more space
+        return newPanes
+      })
+    }
+
+    // Auto-close Thalamus when work completes (optional — user can pin it)
+    // Uncomment if you want auto-collapse:
+    // if (workflowState.phase === 'complete' && hasThalamus) {
+    //   removePane(panes.find(p => p.type === 'thalamus')?.id || '')
+    // }
+
+    prevPhaseRef.current = workflowState.phase
+  }, [workflowState.phase, panes])
+
+
   const addPane = useCallback((type: PaneType) => {
     setPanes((prev) => {
       const newPanes = [...prev, createPane(type)]
@@ -216,6 +245,10 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile }: PaneMana
     switch (pane.type) {
       case 'chat':
         return <ChatPane workflowState={workflowState} />
+      case 'cortex':
+        return <ChatPane workflowState={workflowState} />
+      case 'thalamus':
+        return <ThalamusPane workflowState={workflowState} onClose={() => removePane(pane.id)} />
       case 'tasks':
         return <TaskListPane workflowState={workflowState} />
       case 'history':

@@ -1,0 +1,316 @@
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import type { WorkflowState, ToolCallEvent } from '../lib/types'
+
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+interface CortexEvent {
+  id: string
+  type: 'plan_created' | 'tool_called' | 'tool_result' | 'thinking' | 'draft_section' | 'error' | 'task_complete'
+  summary: string
+  timestamp: number
+}
+
+interface ThalamusMessage {
+  id: string
+  role: 'user' | 'thalamus' | 'system'
+  content: string
+  timestamp: number
+}
+
+interface ThalamusPaneProps {
+  workflowState: WorkflowState
+  className?: string
+  onClose?: () => void
+}
+
+// ─── Brain Icon ─────────────────────────────────────────────────────────────
+
+function ThalamusIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.3">
+      <ellipse cx="10" cy="10" rx="7" ry="8" />
+      <path d="M10 2c0 0-3 4-3 8s3 8 3 8" strokeLinecap="round" />
+      <path d="M10 2c0 0 3 4 3 8s-3 8-3 8" strokeLinecap="round" />
+      <path d="M3.5 7h13M3.5 13h13" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+// ─── Event Bus Display ──────────────────────────────────────────────────────
+
+function EventChip({ event }: { event: CortexEvent }) {
+  const colors: Record<string, string> = {
+    plan_created: 'text-emerald-400 border-emerald-500/20',
+    tool_called: 'text-cyan-400 border-cyan-500/20',
+    tool_result: 'text-cyan-300 border-cyan-500/15',
+    thinking: 'text-purple-400 border-purple-500/20',
+    draft_section: 'text-amber-400 border-amber-500/20',
+    error: 'text-red-400 border-red-500/20',
+    task_complete: 'text-emerald-300 border-emerald-500/15',
+  }
+  const color = colors[event.type] || 'text-white/40 border-white/10'
+
+  return (
+    <div className={`flex items-center gap-1.5 rounded-md border bg-white/[0.02] px-2 py-1 ${color}`}>
+      <span className="font-mono text-[9px] uppercase opacity-60">{event.type.replace('_', ' ')}</span>
+      <span className="font-mono text-[10px] opacity-80 truncate">{event.summary}</span>
+    </div>
+  )
+}
+
+// ─── Main Component ─────────────────────────────────────────────────────────
+
+export function ThalamusPane({ workflowState, className = '', onClose }: ThalamusPaneProps) {
+  const [messages, setMessages] = useState<ThalamusMessage[]>([])
+  const [events, setEvents] = useState<CortexEvent[]>([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const endRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const prevToolCallsRef = useRef<number>(0)
+
+  // Auto-scroll
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, events])
+
+  // Derive events from workflow state changes
+  useEffect(() => {
+    // Track tool calls as events
+    const currentCount = workflowState.toolCalls.length
+    if (currentCount > prevToolCallsRef.current) {
+      const newCalls = workflowState.toolCalls.slice(prevToolCallsRef.current)
+      const newEvents = newCalls.map((tc: ToolCallEvent, i: number): CortexEvent => ({
+        id: `evt-${Date.now()}-${i}`,
+        type: tc.status === 'error' ? 'error' : tc.status === 'done' ? 'tool_result' : 'tool_called',
+        summary: tc.name + (tc.status === 'done' ? ' → done' : tc.status === 'error' ? ' → failed' : ''),
+        timestamp: Date.now(),
+      }))
+      setEvents(prev => [...prev, ...newEvents].slice(-30)) // keep last 30
+    }
+    prevToolCallsRef.current = currentCount
+
+    // Track phase changes
+    if (workflowState.phase === 'executing' && events.length === 0) {
+      setEvents([{
+        id: `evt-start-${Date.now()}`,
+        type: 'plan_created',
+        summary: workflowState.goal || 'Task started',
+        timestamp: Date.now(),
+      }])
+      setMessages([{
+        id: `sys-${Date.now()}`,
+        role: 'system',
+        content: 'Thalamus online — observing Cortex',
+        timestamp: Date.now(),
+      }])
+    }
+
+    if (workflowState.phase === 'complete') {
+      setEvents(prev => [...prev, {
+        id: `evt-done-${Date.now()}`,
+        type: 'task_complete',
+        summary: 'Task finished',
+        timestamp: Date.now(),
+      }])
+    }
+  }, [workflowState.toolCalls, workflowState.phase, workflowState.goal])
+
+  // Send message to Thalamus
+  // For now this hits the same /api/chat endpoint with a Thalamus system prompt prefix
+  // In v0.2 this will be a separate /api/thalamus endpoint with event context
+  const send = useCallback(async () => {
+    const text = input.trim()
+    if (!text || loading) return
+
+    setInput('')
+    setMessages(prev => [...prev, {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: text,
+      timestamp: Date.now(),
+    }])
+    setLoading(true)
+
+    try {
+      // Build event context for the question
+      const eventSummary = events.slice(-10).map(e => `[${e.type}] ${e.summary}`).join('\n')
+      const cortexOutput = workflowState.agentTokens.slice(-500)
+      const thalamusQuery = `[THALAMUS MODE] You are Thalamus, the oversight engine. Cortex is currently working on: "${workflowState.goal}". Recent events:\n${eventSummary}\n\nCortex's latest output (last 500 chars):\n${cortexOutput}\n\nUser asks Thalamus: ${text}\n\nRespond as Thalamus — concise, observational, helpful. You can see what Cortex is doing but you're a separate engine.`
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: thalamusQuery }),
+      })
+
+      if (!res.ok) throw new Error('Thalamus query failed')
+      const data = await res.json()
+
+      setMessages(prev => [...prev, {
+        id: `thalamus-${Date.now()}`,
+        role: 'thalamus',
+        content: data.reply,
+        timestamp: Date.now(),
+      }])
+    } catch {
+      setMessages(prev => [...prev, {
+        id: `err-${Date.now()}`,
+        role: 'thalamus',
+        content: 'Error reaching Thalamus.',
+        timestamp: Date.now(),
+      }])
+    } finally {
+      setLoading(false)
+    }
+  }, [input, loading, events, workflowState])
+
+  const handleKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      void send()
+    }
+  }
+
+  return (
+    <div className={`flex h-full flex-col rounded-xl glass-panel ${className}`}>
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-white/[0.04] px-4 py-3">
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-purple-500/20 text-purple-400">
+            <ThalamusIcon size={14} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-display text-sm font-semibold text-white/90">Thalamus</span>
+              <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[9px] bg-purple-500/15 text-purple-400">
+                <span className="h-1 w-1 rounded-full bg-current" />
+                watching
+              </span>
+            </div>
+            <p className="font-mono text-[9px] text-white/20 uppercase tracking-widest">Oversight engine</p>
+          </div>
+        </div>
+
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="rounded-md p-1 text-white/20 hover:text-white/50 hover:bg-white/[0.04] transition-colors"
+          >
+            <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* Event bus strip */}
+      <AnimatePresence>
+        {events.length > 0 && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden border-b border-white/[0.04] bg-white/[0.015]"
+          >
+            <div className="px-3 py-2 space-y-1 max-h-24 overflow-y-auto">
+              <span className="font-mono text-[8px] text-white/15 uppercase tracking-widest">Cortex event bus</span>
+              <div className="flex flex-wrap gap-1">
+                {events.slice(-6).map(evt => (
+                  <EventChip key={evt.id} event={evt} />
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {messages.length === 0 && (
+          <div className="flex h-full flex-col items-center justify-center text-center py-8">
+            <ThalamusIcon size={28} />
+            <p className="mt-4 font-mono text-xs text-white/20">
+              Thalamus activates when Cortex is working.
+            </p>
+            <p className="mt-1 font-mono text-[10px] text-white/12">
+              Ask questions about what Cortex is doing, request preparations, or flag concerns.
+            </p>
+          </div>
+        )}
+
+        {messages.map(msg => (
+          <motion.div
+            key={msg.id}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`rounded-lg border p-3 ${
+              msg.role === 'user'
+                ? 'border-white/[0.06] bg-white/[0.04] ml-6'
+                : msg.role === 'system'
+                ? 'border-purple-500/10 bg-purple-500/[0.03] text-center mx-4'
+                : 'border-purple-500/15 bg-purple-500/[0.04] mr-4'
+            }`}
+          >
+            {msg.role !== 'system' && (
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="font-mono text-[9px] uppercase tracking-wider text-white/30">
+                  {msg.role === 'user' ? 'You' : 'Thalamus'}
+                </span>
+              </div>
+            )}
+            <div className={`whitespace-pre-wrap font-mono text-[11px] leading-relaxed ${
+              msg.role === 'system' ? 'text-purple-400/50 text-[10px]' : 'text-white/70'
+            }`}>
+              {msg.content}
+            </div>
+          </motion.div>
+        ))}
+
+        {loading && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="rounded-lg border border-purple-500/15 bg-purple-500/[0.04] p-3 mr-4"
+          >
+            <div className="flex gap-1">
+              {[0, 1, 2].map(i => (
+                <motion.span
+                  key={i}
+                  className="h-1.5 w-1.5 rounded-full bg-purple-400/50"
+                  animate={{ opacity: [0.3, 1, 0.3] }}
+                  transition={{ duration: 0.9, delay: i * 0.2, repeat: Infinity }}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+
+        <div ref={endRef} />
+      </div>
+
+      {/* Input */}
+      <div className="border-t border-white/[0.04] p-3">
+        <div className="flex gap-2">
+          <input
+            ref={inputRef}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder="Ask Thalamus..."
+            className="flex-1 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 font-mono text-xs text-white/80 placeholder-white/20 outline-none focus:border-purple-500/40 transition-colors"
+          />
+          <button
+            onClick={() => void send()}
+            disabled={!input.trim() || loading}
+            className="rounded-lg bg-purple-500/20 px-3 font-mono text-xs text-purple-400 transition-all hover:bg-purple-500/30 disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            ↵
+          </button>
+        </div>
+        <p className="mt-1.5 font-mono text-[9px] text-white/15">Ask about what Cortex is doing</p>
+      </div>
+    </div>
+  )
+}

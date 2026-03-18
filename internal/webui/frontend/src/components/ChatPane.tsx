@@ -122,10 +122,10 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-display text-sm font-semibold text-white/90">Claude</span>
+              <span className="font-display text-sm font-semibold text-white/90">Cortex</span>
               <TierBadge tier={workflowState.modelTier} />
             </div>
-            <p className="font-mono text-[9px] text-white/20 uppercase tracking-widest">Single Brain</p>
+            <p className="font-mono text-[9px] text-white/20 uppercase tracking-widest">Cortex engine</p>
           </div>
         </div>
 
@@ -194,7 +194,7 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
           <div className="flex h-full flex-col items-center justify-center text-center py-8">
             <ClaudeLogo size={32} />
             <p className="mt-4 font-mono text-xs text-white/20">
-              Single brain. Ask anything or give a goal.
+              Cortex ready. Ask anything or give a task.
             </p>
             <div className="mt-4 space-y-1.5">
               {[
@@ -227,7 +227,7 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
           >
             <div className="flex items-center gap-2 mb-1.5">
               <span className="font-mono text-[9px] uppercase tracking-wider text-white/30">
-                {msg.role === 'user' ? 'You' : 'Claude'}
+                {msg.role === 'user' ? 'You' : 'Cortex'}
               </span>
               {msg.modelTier && <TierBadge tier={msg.modelTier} />}
             </div>
@@ -294,7 +294,7 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKey}
             rows={2}
-            placeholder="Ask Claude anything..."
+            placeholder="Message Cortex..."
             className="flex-1 resize-none rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-xs text-white/80 placeholder-white/20 outline-none focus:border-anthropic/40 transition-colors"
           />
           <button
