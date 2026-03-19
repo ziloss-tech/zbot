@@ -15,15 +15,27 @@ The core agent loop works: chat → tools → memory → streaming events.
 The brain-region architecture (Cortex, Thalamus, Hippocampus, Amygdala, Cerebellum) is established.
 The event bus is emitting real-time events. The SSE endpoint streams them to the frontend.
 
-## What's Working
+## What's Working (verified 2026-03-18)
 
 - Full agentic chat via /api/chat/stream (tool use, memory, event bus)
-- In-session conversation history (20 exchanges)
-- SSE event stream at /api/events/:sessionID
-- Live Cortex status indicator in metrics bar
-- Live activity indicator showing tool calls as they happen
-- Thalamus pane (auto-opens, basic event display)
-- Brain-region naming throughout UI
+- In-session conversation history (20 exchanges per session)
+- SSE event stream at /api/events/:sessionID (real-time tool_called, tool_result, turn_complete)
+- Live Cortex status indicator in metrics bar (pulsing cyan when working, green when idle)
+- Live activity indicator showing tool calls animating in real-time during chat
+- Thalamus pane with dedicated /api/thalamus endpoint + ThalamusSystemPrompt (FIXED — no longer uses user-turn injection)
+- Brain-region naming throughout UI (Cortex, Thalamus, Hippocampus, Amygdala)
+- Streaming chat: POST /api/chat/stream runs agent in goroutine, relays events, sends final reply
+- Serper search tool (alternative to Brave, 16x cheaper)
+- Stall recovery pattern designed (see IDEAS/NEURAL_ARCHITECTURE_AI.md)
+- Works without Postgres (graceful degradation — nil guards on metrics + SSE handlers)
+
+## What's NOT Working / Known Issues
+
+- Metrics strip shows all zeros (no Postgres — tokens/cost not tracked locally)
+- Thalamus event display still reads from workflowState instead of real event bus
+- No conversation persistence across restarts (in-memory only)
+- Cortex sometimes asks permission before writing files (Claude safety training — see stall recovery pattern)
+- The .env needs manual `set -a && source .env && set +a` before running (no dotenv loader)
 
 ## What Needs Work
 
@@ -82,6 +94,18 @@ Frontend event hook in internal/webui/frontend/src/hooks/useEventBus.ts.
 ## DO NOT
 
 - Change the agent loop in agent.go (it works, don't touch it)
-- Modify the streaming chat handler (it works)
+- Modify the streaming chat handler chat_stream_handler.go (it works)
+- Modify the Thalamus backend handler thalamus_handler.go (it works, identity is correct)
+- Change the system prompt in wire.go (the "execute immediately" approach was reverted intentionally)
 - Add new npm dependencies without checking bundle size
-- Break the existing chat functionality
+- Break the existing chat or streaming functionality
+- Push directly to main without testing build + tests
+
+## IMPORTANT FILES ADDED RECENTLY (you may not know about these)
+
+- internal/webui/events_handler.go — SSE endpoint for event bus
+- internal/webui/chat_stream_handler.go — streaming chat endpoint  
+- internal/webui/thalamus_handler.go — dedicated Thalamus API with its own system prompt
+- internal/webui/frontend/src/hooks/useEventBus.ts — React hook for event bus SSE
+- internal/agent/eventbus.go — in-memory event bus implementation
+- internal/tools/search_serper.go — Serper search provider
