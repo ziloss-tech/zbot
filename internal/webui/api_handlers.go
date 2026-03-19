@@ -398,18 +398,21 @@ func (s *Server) handleMetricsAPI(w http.ResponseWriter, r *http.Request) {
 
 	metrics := map[string]any{}
 
-	// Guard: use in-memory counters if no Postgres connection.
-	if s.db == nil {
-		tokens := localMetrics.totalTokens.Load()
-		turns := localMetrics.turnCount.Load()
-		costMicro := localMetrics.costMicro.Load()
-		costUSD := float64(costMicro) / 1_000_000.0
+	// Always read in-memory counters — the event bus metrics collector
+	// accumulates tokens/cost from turn_complete events in real time.
+	// These are more reliable than Postgres audit queries for "today" data.
+	inMemTokens := localMetrics.totalTokens.Load()
+	inMemTurns := localMetrics.turnCount.Load()
+	inMemCostMicro := localMetrics.costMicro.Load()
+	inMemCostUSD := float64(inMemCostMicro) / 1_000_000.0
 
+	// Guard: use in-memory counters only if no Postgres connection.
+	if s.db == nil {
 		metrics["active_workflows"] = 0
-		metrics["total_tasks"] = turns
-		metrics["done_tasks"] = turns
-		metrics["tokens_today"] = tokens
-		metrics["cost_today"] = fmt.Sprintf("$%.4f", costUSD)
+		metrics["total_tasks"] = inMemTurns
+		metrics["done_tasks"] = inMemTurns
+		metrics["tokens_today"] = inMemTokens
+		metrics["cost_today"] = fmt.Sprintf("$%.4f", inMemCostUSD)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		json.NewEncoder(w).Encode(metrics)
@@ -429,14 +432,10 @@ func (s *Server) handleMetricsAPI(w http.ResponseWriter, r *http.Request) {
 	metrics["total_tasks"] = totalTasks
 	metrics["done_tasks"] = doneTasks
 
-	var todayInput, todayOutput int
-	s.db.QueryRow(r.Context(),
-		`SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)
-		 FROM zbot_audit_model_calls WHERE created_at >= CURRENT_DATE`).
-		Scan(&todayInput, &todayOutput)
-	metrics["tokens_today"] = todayInput + todayOutput
-	cost := float64(todayInput)*0.000003 + float64(todayOutput)*0.000015
-	metrics["cost_today"] = fmt.Sprintf("$%.2f", cost)
+	// Use in-memory counters for tokens/cost — they accumulate from the event bus
+	// in real time and don't depend on the audit table having today's entries.
+	metrics["tokens_today"] = inMemTokens
+	metrics["cost_today"] = fmt.Sprintf("$%.4f", inMemCostUSD)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -711,6 +710,35 @@ func (s *Server) handleQuickChatAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(chatResponse{Reply: reply})
+}
+
+// handleChatHistoryClearAPI handles DELETE /api/chat/history — clear conversation.
+func (s *Server) handleChatHistoryClearAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.clearChatHistory == nil {
+		http.Error(w, "history clear not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := s.clearChatHistory(); err != nil {
+		http.Error(w, "failed to clear history: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
 }
 
 // ─── Sprint 13: WORKSPACE FILE PANEL API ──────────────────────────────────
