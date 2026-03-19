@@ -63,7 +63,7 @@ When events stream in:
 - `verify_start` → show "Thalamus verifying..."
 - `verify_complete` + approved → show "✓ Verified ({confidence}%)" in green
 - `verify_complete` + rejected → show "Revision needed" in amber, then tool events continue
-- `memory_loaded` with stage=enrichment → show "Memory: found {count} related facts"
+- `memory_loaded` with `detail.stage === "enrichment"` → show "Memory: found {count} related facts" (NOTE: same event type as initial memory load, distinguished by the `stage` field in detail)
 
 The event data is already streaming via the useEventBus hook. You just need to render these new event types in the activity indicator.
 
@@ -88,7 +88,7 @@ When verify_complete events come through the event bus:
 
 This makes Thalamus proactive — the user sees verification results without asking.
 
-Wire ThalamusPane to the real event bus via the useEventBus hook. Remove the fake event generation from workflowState.
+Wire ThalamusPane to the real event bus via the useEventBus hook. Remove the fake event generation that currently watches `workflowState.toolCalls` and `workflowState.phase` (lines ~80-118 in ThalamusPane.tsx). This fake event logic is ONLY consumed by ThalamusPane — removing it won't break anything else. The ThalamusPane still receives `workflowState` as a prop from PaneManager but should stop generating synthetic events from it. The manual Thalamus Q&A (user types a question → /api/thalamus) should continue working — that uses `workflowState.agentTokens` and `workflowState.goal` which are separate from the fake events.
 
 ### TASK 3: Update ARCHITECTURE.md
 **Priority: MEDIUM**
@@ -124,7 +124,9 @@ The metrics strip shows all zeros because there's no Postgres. Add simple in-mem
 - Turn count
 - These reset on restart (that's fine for now)
 
-Wire these into the /api/metrics endpoint so the UI shows real numbers.
+Cost is ALREADY calculated in agent.go (line ~319): `costUSD = float64(output.InputTokens)*inputCost + float64(output.OutputTokens)*outputCost` using the ModelTierCost() lookup table in router.go. It's also emitted in the turn_complete event detail (`cost_usd` field). The coworker does NOT need to derive cost from a price table — just accumulate the `cost_usd` value from each turn_complete event.
+
+Implementation: add an in-memory struct in api_handlers.go (or a new metrics.go) with atomic counters. Increment on each turn_complete. Serve via the existing /api/metrics endpoint.
 
 ---
 
@@ -136,7 +138,8 @@ Wire these into the /api/metrics endpoint so the UI shows real numbers.
 4. Send "Search the web for latest AI news" — activity strip shows full cognitive flow including "Thalamus verifying..."
 5. Thalamus pane auto-shows verification results without user interaction
 6. ARCHITECTURE.md reflects the live 5-stage cognitive loop
-7. Commit and push: `git push public public-release:main`
+7. Commit and push: `git diff --stat  # sanity check — make sure only expected files changed
+git push public public-release:main`
 
 ## DO NOT
 
@@ -145,6 +148,7 @@ Wire these into the /api/metrics endpoint so the UI shows real numbers.
 - Change thalamus_handler.go (the manual Thalamus Q&A still works alongside auto-verification)
 - Change the system prompt in wire.go
 - Modify the event bus or SSE handler
+- Change event type definitions in ports.go (Tasks 1 and 2 depend on the existing event shape)
 - Add npm dependencies without checking bundle size
 
 ## KEY FILES REFERENCE
@@ -174,5 +178,6 @@ cd ~/Desktop/Projects/zbot
 git checkout public-release
 # ... make changes ...
 git add -A && git commit -m "feat: cognitive UI + architecture update"
+git diff --stat  # sanity check — make sure only expected files changed
 git push public public-release:main
 ```
