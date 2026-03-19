@@ -387,6 +387,19 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	confirmStore := security.NewConfirmationStore()
 	ag.SetConfirmationStore(confirmStore)
 
+	// Wire cheap LLM for Frontal Lobe (planning) + Thalamus (verification).
+	// Uses Haiku for Anthropic users, or the same model for OpenAI-compat (already cheap).
+	if anthropicKey != "" {
+		cheapLLM := llm.NewHaikuClient(anthropicKey, logger)
+		ag.SetCheapLLM(cheapLLM)
+		logger.Info("cognitive stages enabled (Frontal Lobe + Thalamus verification)")
+	} else if useOpenAICompat {
+		ag.SetCheapLLM(llmClient) // open models are already cheap
+		logger.Info("cognitive stages enabled (using primary model for planning/verification)")
+	} else {
+		logger.Warn("cognitive stages disabled — no cheap LLM available")
+	}
+
 	// ── Workflow Engine (Sprint 5) ───────────────────────────────────────────
 	var orch *workflow.Orchestrator
 	if pgDB != nil {
