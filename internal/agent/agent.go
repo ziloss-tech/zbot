@@ -64,6 +64,7 @@ func DefaultConfig() Config {
 type Agent struct {
 	cfg          Config
 	llm          LLMClient
+	cheapLLM     LLMClient // Frontal Lobe + Thalamus use this (Haiku/Grok Fast). Nil = skip cognitive stages.
 	memory       MemoryStore
 	tools        map[string]Tool
 	audit        AuditLogger
@@ -75,6 +76,12 @@ type Agent struct {
 // SetConfirmationStore wires the confirmation gate for destructive tool calls.
 func (a *Agent) SetConfirmationStore(cs *security.ConfirmationStore) {
 	a.confirmStore = cs
+}
+
+// SetCheapLLM wires the cheap model used by Frontal Lobe (planning) and Thalamus (verification).
+// If nil, cognitive stages are skipped and the agent falls back to single-call mode.
+func (a *Agent) SetCheapLLM(llm LLMClient) {
+	a.cheapLLM = llm
 }
 
 // GetTool returns a tool by name, for direct execution (e.g. after confirmation).
@@ -160,10 +167,12 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		ctx = WithModelHint(ctx, input.ModelHint)
 	}
 
-	// 1. Load relevant memories for this message.
+	// ── STAGE 1: FRONTAL LOBE — Plan the approach ──────────────────────────
+	plan := a.planTask(ctx, input.SessionID, input.UserMsg.Content, a.cheapLLM)
+
+	// ── STAGE 2: HIPPOCAMPUS — Load relevant memories ──────────────────────
 	facts, err := a.memory.Search(ctx, input.UserMsg.Content, a.cfg.MemorySearchLimit)
 	if err != nil {
-		// Memory failure is non-fatal — log and continue without it.
 		a.logger.Warn("memory search failed", "err", err)
 		facts = nil
 	}
@@ -173,8 +182,8 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 			map[string]any{"count": len(facts)})
 	}
 
-	// 2. Build the context window for this turn.
-	messages := a.buildContext(input, facts)
+	// ── STAGE 3: CORTEX — Build context with plan injection ────────────────
+	messages := a.buildContextWithPlan(input, facts, plan)
 
 	// 3. Collect tool definitions to expose to the model.
 	toolDefs := make([]ToolDefinition, 0, len(a.tools))
@@ -238,6 +247,67 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		}
 	}
 
+	// ── STAGE 4: HIPPOCAMPUS — Mid-task memory enrichment ──────────────────
+	// If the plan says we need memory and tools were invoked, check memory again
+	// based on what Cortex discovered. "Wait, we already knew part of this."
+	if plan != nil && plan.NeedsMemory && len(invokedTools) > 0 {
+		// Collect tool results from the messages (they're the tool-role messages).
+		var toolResultsForMemory []ToolResult
+		for _, msg := range messages {
+			if msg.Role == RoleTool && !msg.IsError {
+				toolResultsForMemory = append(toolResultsForMemory, ToolResult{Content: msg.Content})
+			}
+		}
+		enrichedFacts := a.enrichMemory(ctx, input.SessionID, toolResultsForMemory)
+		if len(enrichedFacts) > 0 {
+			// Inject enriched memory as a system note before the final response.
+			memNote := "\n\nIMPORTANT - Additional context from memory (discovered mid-task):\n"
+			for _, f := range enrichedFacts {
+				memNote += fmt.Sprintf("- %s\n", f.Content)
+			}
+			memNote += "\nConsider this information in your final response."
+			messages = append(messages, Message{Role: RoleSystem, Content: memNote})
+			// Run one more Cortex call to incorporate the new memory.
+			revisedResult, revErr := a.llm.Complete(ctx, messages, toolDefs)
+			if revErr == nil && revisedResult.Content != "" {
+				output.Reply = revisedResult.Content
+				output.InputTokens += revisedResult.InputTokens
+				output.OutputTokens += revisedResult.OutputTokens
+				output.TokensUsed += revisedResult.InputTokens + revisedResult.OutputTokens
+			}
+		}
+	}
+
+	// ── STAGE 5: THALAMUS — Verify the reply before sending ────────────────
+	if output.Reply != "" && plan != nil && plan.Verification != "none" {
+		// Collect evidence from tool results for verification context.
+		var evidence string
+		for _, msg := range messages {
+			if msg.Role == RoleTool && !msg.IsError {
+				if len(msg.Content) > 500 {
+					evidence += msg.Content[:500] + "\n[truncated]\n---\n"
+				} else {
+					evidence += msg.Content + "\n---\n"
+				}
+			}
+		}
+
+		approved, suggestion := a.verifyReply(ctx, input.SessionID, plan, input.UserMsg.Content, output.Reply, evidence, a.cheapLLM)
+		if !approved && suggestion != "" {
+			// One revision attempt: send the suggestion back to Cortex.
+			revisionMsg := fmt.Sprintf("THALAMUS REVIEW - Your draft reply needs revision.\nIssue: %s\nPlease revise your response addressing this feedback.", suggestion)
+			messages = append(messages, Message{Role: RoleSystem, Content: revisionMsg})
+			
+			revisedResult, revErr := a.llm.Complete(ctx, messages, nil) // no tools for revision
+			if revErr == nil && revisedResult.Content != "" {
+				output.Reply = revisedResult.Content
+				output.InputTokens += revisedResult.InputTokens
+				output.OutputTokens += revisedResult.OutputTokens
+				output.TokensUsed += revisedResult.InputTokens + revisedResult.OutputTokens
+			}
+		}
+	}
+
 	// 6. Track which tools were used.
 	for name := range invokedTools {
 		output.ToolsInvoked = append(output.ToolsInvoked, name)
@@ -290,6 +360,38 @@ func (a *Agent) buildContext(input TurnInput, facts []Fact) []Message {
 	messages = append(messages, input.History...)
 
 	// New user message.
+	messages = append(messages, input.UserMsg)
+
+	return messages
+}
+
+// buildContextWithPlan assembles the context with the Frontal Lobe's plan injected.
+// buildContextWithPlan assembles the context with the Frontal Lobe's plan injected.
+func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, plan *TaskPlan) []Message {
+	messages := make([]Message, 0, len(input.History)+4)
+
+	// System prompt with memory.
+	sysPrompt := a.buildSystemPrompt(facts)
+
+	// Inject plan if available.
+	if plan != nil {
+		sysPrompt += "\n\n## Execution Plan (from Frontal Lobe)\n"
+		sysPrompt += fmt.Sprintf("Task type: %s | Complexity: %s | Verification: %s\n", plan.Type, plan.Complexity, plan.Verification)
+		if len(plan.Steps) > 0 {
+			sysPrompt += "Steps:\n"
+			for i, step := range plan.Steps {
+				sysPrompt += fmt.Sprintf("  %d. %s\n", i+1, step)
+			}
+		}
+		sysPrompt += "\nFollow this plan. Execute each step in order. If the plan is wrong, adjust — but explain why."
+	}
+
+	messages = append(messages, Message{
+		Role:    RoleSystem,
+		Content: sysPrompt,
+	})
+
+	messages = append(messages, input.History...)
 	messages = append(messages, input.UserMsg)
 
 	return messages

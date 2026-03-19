@@ -290,6 +290,11 @@ const (
 	EventFetchURL      EventType = "fetch_url"
 	EventConfirmNeeded EventType = "confirm_needed"
 	EventSecurityFlag  EventType = "security_flag"
+	EventPlanStart     EventType = "plan_start"
+	EventPlanComplete  EventType = "plan_complete"
+	EventVerifyStart   EventType = "verify_start"
+	EventVerifyComplete EventType = "verify_complete"
+	EventMemoryEnrich  EventType = "memory_enrich"
 )
 
 // AgentEvent is a structured event emitted by Cortex as it works.
