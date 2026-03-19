@@ -78,6 +78,36 @@ var systemPrompt = func() string {
 
 func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error {
 
+	// ── Dotenv ──────────────────────────────────────────────────────────────
+	// Load .env file if it exists. Doesn't override explicit env vars.
+	if envData, err := os.ReadFile(".env"); err == nil {
+		loaded := 0
+		for _, line := range strings.Split(string(envData), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			key, val, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			key = strings.TrimSpace(key)
+			val = strings.TrimSpace(val)
+			// Remove surrounding quotes if present.
+			if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
+				val = val[1 : len(val)-1]
+			}
+			// Only set if not already set — don't override explicit env vars.
+			if _, exists := os.LookupEnv(key); !exists {
+				os.Setenv(key, val)
+				loaded++
+			}
+		}
+		if loaded > 0 {
+			logger.Info("loaded .env file", "vars", loaded)
+		}
+	}
+
 	// ── Secrets ─────────────────────────────────────────────────────────────
 	// Try GCP Secret Manager first; fall back to env vars for Docker/Coolify.
 	var sm agent.SecretsManager
@@ -299,8 +329,11 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	}
 
 	// ── Core Tools ──────────────────────────────────────────────────────────
-	coreTools := []agent.Tool{
-		searchTool,
+	coreTools := []agent.Tool{}
+	if searchTool != nil {
+		coreTools = append(coreTools, searchTool)
+	}
+	coreTools = append(coreTools,
 		tools.NewFetchURLToolFull(proxyPool, rateLimiter, scrapeCache, browserFetcher),
 		tools.NewCredentialedFetchTool(sm, siteCredentials, proxyPool, rateLimiter, scrapeCache, logger),
 		tools.NewManageCredentialsTool(sm, logger), // Sprint C stretch: credential CRUD
@@ -310,7 +343,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		// Sprint 12: save_memory + search_memory moved to memory skill (below).
 		tools.NewAnalyzeImageTool(llmClient, workspaceRoot),
 		tools.NewPDFExtractTool(workspaceRoot),
-	}
+	)
 
 	// ── Skills System (Sprint 7) ────────────────────────────────────────────
 	skillRegistry := skills.NewRegistry()
@@ -919,6 +952,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// v2: Wire agentic quick chat — uses full agent.Run() with tool use + event bus.
 	// Works with or without Postgres (memory degrades gracefully).
 	webServer.SetEventBus(eventBus)
+	webServer.StartMetricsCollector(ctx)
 	webServer.SetLLMClient(llmClient)
 	// In-memory conversation history for web chat sessions.
 	// Keeps the last 20 exchanges (40 messages) per session.

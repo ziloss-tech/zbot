@@ -10,11 +10,32 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/zbot-ai/zbot/internal/research"
 	"github.com/zbot-ai/zbot/internal/scheduler"
 )
+
+// ─── IN-MEMORY METRICS ─────────────────────────────────────────────────────
+
+// inMemoryMetrics tracks token usage, cost, and turn count without Postgres.
+// Resets on restart — that's fine for local dev.
+type inMemoryMetrics struct {
+	totalTokens atomic.Int64  // input + output tokens
+	turnCount   atomic.Int64
+	costMicro   atomic.Int64  // cost in micro-dollars (USD * 1_000_000) for atomic precision
+}
+
+var localMetrics inMemoryMetrics
+
+// RecordTurn accumulates metrics from a turn_complete event.
+// Called from the event bus subscriber in the Server.
+func RecordTurn(inputTokens, outputTokens int, costUSD float64) {
+	localMetrics.totalTokens.Add(int64(inputTokens + outputTokens))
+	localMetrics.turnCount.Add(1)
+	localMetrics.costMicro.Add(int64(costUSD * 1_000_000))
+}
 
 // ─── SSE STREAM ──────────────────────────────────────────────────────────────
 
@@ -377,13 +398,18 @@ func (s *Server) handleMetricsAPI(w http.ResponseWriter, r *http.Request) {
 
 	metrics := map[string]any{}
 
-	// Guard: return empty metrics if no Postgres connection.
+	// Guard: use in-memory counters if no Postgres connection.
 	if s.db == nil {
+		tokens := localMetrics.totalTokens.Load()
+		turns := localMetrics.turnCount.Load()
+		costMicro := localMetrics.costMicro.Load()
+		costUSD := float64(costMicro) / 1_000_000.0
+
 		metrics["active_workflows"] = 0
-		metrics["total_tasks"] = 0
-		metrics["done_tasks"] = 0
-		metrics["tokens_today"] = 0
-		metrics["cost_today"] = "$0.00"
+		metrics["total_tasks"] = turns
+		metrics["done_tasks"] = turns
+		metrics["tokens_today"] = tokens
+		metrics["cost_today"] = fmt.Sprintf("$%.4f", costUSD)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		json.NewEncoder(w).Encode(metrics)

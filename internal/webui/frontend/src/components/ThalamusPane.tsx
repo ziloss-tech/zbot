@@ -1,20 +1,32 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import type { WorkflowState, ToolCallEvent } from '../lib/types'
+import type { WorkflowState } from '../lib/types'
+import type { AgentEvent } from '../hooks/useEventBus'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-
-interface CortexEvent {
-  id: string
-  type: 'plan_created' | 'tool_called' | 'tool_result' | 'thinking' | 'draft_section' | 'error' | 'task_complete'
-  summary: string
-  timestamp: number
-}
 
 interface ThalamusMessage {
   id: string
   role: 'user' | 'thalamus' | 'system'
   content: string
+  timestamp: number
+}
+
+interface VerificationResult {
+  id: string
+  approved: boolean
+  confidence: number
+  issues: string[]
+  suggestion: string
+  timestamp: number
+}
+
+interface PlanSummary {
+  id: string
+  type: string
+  complexity: string
+  steps: number
+  verification: string
   timestamp: number
 }
 
@@ -37,23 +49,89 @@ function ThalamusIcon({ size = 14 }: { size?: number }) {
   )
 }
 
-// ─── Event Bus Display ──────────────────────────────────────────────────────
+// ─── Cognitive Cards ────────────────────────────────────────────────────────
 
-function EventChip({ event }: { event: CortexEvent }) {
+function PlanCard({ plan }: { plan: PlanSummary }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="rounded-lg border border-violet-500/20 bg-violet-500/[0.06] p-3"
+    >
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="font-mono text-[9px] uppercase tracking-wider text-violet-400/60">Frontal Lobe</span>
+        <span className="inline-flex items-center rounded-full px-1.5 py-0.5 font-mono text-[9px] bg-violet-500/15 text-violet-300">
+          plan
+        </span>
+      </div>
+      <div className="font-mono text-[11px] text-white/70">
+        Plan: <span className="text-violet-300">{plan.type}</span>, {plan.complexity}, {plan.steps} step{plan.steps !== 1 ? 's' : ''}
+      </div>
+      <div className="font-mono text-[9px] text-white/30 mt-1">
+        verification: {plan.verification}
+      </div>
+    </motion.div>
+  )
+}
+
+function VerificationCard({ result }: { result: VerificationResult }) {
+  const isApproved = result.approved
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`rounded-lg border p-3 ${
+        isApproved
+          ? 'border-emerald-500/20 bg-emerald-500/[0.06]'
+          : 'border-amber-500/20 bg-amber-500/[0.06]'
+      }`}
+    >
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className={`font-mono text-[9px] uppercase tracking-wider ${
+          isApproved ? 'text-emerald-400/60' : 'text-amber-400/60'
+        }`}>Thalamus verification</span>
+      </div>
+      <div className={`font-mono text-[11px] ${isApproved ? 'text-emerald-300' : 'text-amber-300'}`}>
+        {isApproved ? `Verified ✓` : 'Revision needed'} (confidence: {result.confidence}%)
+      </div>
+      {!isApproved && result.issues.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {result.issues.map((issue, i) => (
+            <div key={i} className="font-mono text-[10px] text-amber-400/70">
+              — {issue}
+            </div>
+          ))}
+          {result.suggestion && (
+            <div className="font-mono text-[10px] text-white/40 mt-1.5 italic">
+              Suggestion: {result.suggestion}
+            </div>
+          )}
+        </div>
+      )}
+    </motion.div>
+  )
+}
+
+// ─── Real Event Bus Chip ────────────────────────────────────────────────────
+
+function EventChip({ event }: { event: AgentEvent }) {
   const colors: Record<string, string> = {
-    plan_created: 'text-emerald-400 border-emerald-500/20',
+    plan_start: 'text-violet-400 border-violet-500/20',
+    plan_complete: 'text-violet-300 border-violet-500/15',
+    verify_start: 'text-amber-400 border-amber-500/20',
+    verify_complete: 'text-emerald-400 border-emerald-500/20',
     tool_called: 'text-cyan-400 border-cyan-500/20',
     tool_result: 'text-cyan-300 border-cyan-500/15',
-    thinking: 'text-purple-400 border-purple-500/20',
-    draft_section: 'text-amber-400 border-amber-500/20',
-    error: 'text-red-400 border-red-500/20',
-    task_complete: 'text-emerald-300 border-emerald-500/15',
+    tool_error: 'text-red-400 border-red-500/20',
+    memory_loaded: 'text-blue-400 border-blue-500/20',
+    turn_start: 'text-white/40 border-white/10',
+    turn_complete: 'text-emerald-300 border-emerald-500/15',
   }
   const color = colors[event.type] || 'text-white/40 border-white/10'
 
   return (
     <div className={`flex items-center gap-1.5 rounded-md border bg-white/[0.02] px-2 py-1 ${color}`}>
-      <span className="font-mono text-[9px] uppercase opacity-60">{event.type.replace('_', ' ')}</span>
+      <span className="font-mono text-[9px] uppercase opacity-60">{event.type.replace(/_/g, ' ')}</span>
       <span className="font-mono text-[10px] opacity-80 truncate">{event.summary}</span>
     </div>
   )
@@ -63,63 +141,78 @@ function EventChip({ event }: { event: CortexEvent }) {
 
 export function ThalamusPane({ workflowState, className = '', onClose }: ThalamusPaneProps) {
   const [messages, setMessages] = useState<ThalamusMessage[]>([])
-  const [events, setEvents] = useState<CortexEvent[]>([])
+  const [plans, setPlans] = useState<PlanSummary[]>([])
+  const [verifications, setVerifications] = useState<VerificationResult[]>([])
+  const [busEvents, setBusEvents] = useState<AgentEvent[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const prevToolCallsRef = useRef<number>(0)
+  const processedEventsRef = useRef<Set<string>>(new Set())
 
   // Auto-scroll
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, events])
+  }, [messages, plans, verifications, busEvents])
 
-  // Derive events from workflow state changes
+  // ─── Consume real event bus via window.__zbotEvents ────────────────────
   useEffect(() => {
-    // Track tool calls as events
-    const currentCount = workflowState.toolCalls.length
-    if (currentCount > prevToolCallsRef.current) {
-      const newCalls = workflowState.toolCalls.slice(prevToolCallsRef.current)
-      const newEvents = newCalls.map((tc: ToolCallEvent, i: number): CortexEvent => ({
-        id: `evt-${Date.now()}-${i}`,
-        type: tc.status === 'error' ? 'error' : tc.status === 'done' ? 'tool_result' : 'tool_called',
-        summary: tc.name + (tc.status === 'done' ? ' → done' : tc.status === 'error' ? ' → failed' : ''),
-        timestamp: Date.now(),
-      }))
-      setEvents(prev => [...prev, ...newEvents].slice(-30)) // keep last 30
-    }
-    prevToolCallsRef.current = currentCount
+    const poll = setInterval(() => {
+      const rawEvents: AgentEvent[] = (window as any).__zbotEvents || []
+      if (rawEvents.length === 0) return
 
-    // Track phase changes
-    if (workflowState.phase === 'executing' && events.length === 0) {
-      setEvents([{
-        id: `evt-start-${Date.now()}`,
-        type: 'plan_created',
-        summary: workflowState.goal || 'Task started',
-        timestamp: Date.now(),
-      }])
+      // Only process new events
+      const newEvents = rawEvents.filter(e => !processedEventsRef.current.has(e.id))
+      if (newEvents.length === 0) return
+
+      for (const evt of newEvents) {
+        processedEventsRef.current.add(evt.id)
+
+        // Extract plan_complete into structured plan summary
+        if (evt.type === 'plan_complete' && evt.detail) {
+          setPlans(prev => [...prev, {
+            id: evt.id,
+            type: String(evt.detail?.type || 'unknown'),
+            complexity: String(evt.detail?.complexity || 'unknown'),
+            steps: Number(evt.detail?.steps || 0),
+            verification: String(evt.detail?.verification || 'none'),
+            timestamp: Date.now(),
+          }])
+        }
+
+        // Extract verify_complete into structured verification result
+        if (evt.type === 'verify_complete' && evt.detail) {
+          setVerifications(prev => [...prev, {
+            id: evt.id,
+            approved: Boolean(evt.detail?.approved),
+            confidence: Number(evt.detail?.confidence || 0),
+            issues: Array.isArray(evt.detail?.issues) ? evt.detail.issues as string[] : [],
+            suggestion: String(evt.detail?.suggestion || ''),
+            timestamp: Date.now(),
+          }])
+        }
+      }
+
+      // Keep last 30 events for the bus strip
+      setBusEvents(rawEvents.slice(-30))
+    }, 300) // Poll every 300ms — fast enough for UI, light enough on CPU
+
+    return () => clearInterval(poll)
+  }, [])
+
+  // Show a system message when Thalamus first observes activity
+  useEffect(() => {
+    if (busEvents.length > 0 && messages.length === 0) {
       setMessages([{
         id: `sys-${Date.now()}`,
         role: 'system',
-        content: 'Thalamus online — observing Cortex',
+        content: 'Thalamus online — observing Cortex via event bus',
         timestamp: Date.now(),
       }])
     }
+  }, [busEvents.length, messages.length])
 
-    if (workflowState.phase === 'complete') {
-      setEvents(prev => [...prev, {
-        id: `evt-done-${Date.now()}`,
-        type: 'task_complete',
-        summary: 'Task finished',
-        timestamp: Date.now(),
-      }])
-    }
-  }, [workflowState.toolCalls, workflowState.phase, workflowState.goal])
-
-  // Send message to Thalamus
-  // For now this hits the same /api/chat endpoint with a Thalamus system prompt prefix
-  // In v0.2 this will be a separate /api/thalamus endpoint with event context
+  // Send message to Thalamus (manual Q&A — uses workflowState.agentTokens and goal)
   const send = useCallback(async () => {
     const text = input.trim()
     if (!text || loading) return
@@ -134,8 +227,8 @@ export function ThalamusPane({ workflowState, className = '', onClose }: Thalamu
     setLoading(true)
 
     try {
-      // Build event context for the question
-      const eventSummary = events.slice(-10).map(e => `[${e.type}] ${e.summary}`).join('\n')
+      // Build event context from real bus events
+      const eventSummary = busEvents.slice(-10).map(e => `[${e.type}] ${e.summary}`).join('\n')
       const cortexOutput = workflowState.agentTokens.slice(-500)
       const thalamusQuery = `[THALAMUS MODE] You are Thalamus, the oversight engine. Cortex is currently working on: "${workflowState.goal}". Recent events:\n${eventSummary}\n\nCortex's latest output (last 500 chars):\n${cortexOutput}\n\nUser asks Thalamus: ${text}\n\nRespond as Thalamus — concise, observational, helpful. You can see what Cortex is doing but you're a separate engine.`
 
@@ -164,7 +257,7 @@ export function ThalamusPane({ workflowState, className = '', onClose }: Thalamu
     } finally {
       setLoading(false)
     }
-  }, [input, loading, events, workflowState])
+  }, [input, loading, busEvents, workflowState])
 
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -205,9 +298,9 @@ export function ThalamusPane({ workflowState, className = '', onClose }: Thalamu
         )}
       </div>
 
-      {/* Event bus strip */}
+      {/* Real event bus strip */}
       <AnimatePresence>
-        {events.length > 0 && (
+        {busEvents.length > 0 && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
@@ -217,7 +310,7 @@ export function ThalamusPane({ workflowState, className = '', onClose }: Thalamu
             <div className="px-3 py-2 space-y-1 max-h-24 overflow-y-auto">
               <span className="font-mono text-[8px] text-white/15 uppercase tracking-widest">Cortex event bus</span>
               <div className="flex flex-wrap gap-1">
-                {events.slice(-6).map(evt => (
+                {busEvents.slice(-6).map(evt => (
                   <EventChip key={evt.id} event={evt} />
                 ))}
               </div>
@@ -226,9 +319,9 @@ export function ThalamusPane({ workflowState, className = '', onClose }: Thalamu
         )}
       </AnimatePresence>
 
-      {/* Messages */}
+      {/* Cognitive results + Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.length === 0 && (
+        {messages.length === 0 && plans.length === 0 && verifications.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center text-center py-8">
             <ThalamusIcon size={28} />
             <p className="mt-4 font-mono text-xs text-white/20">
@@ -240,6 +333,17 @@ export function ThalamusPane({ workflowState, className = '', onClose }: Thalamu
           </div>
         )}
 
+        {/* Plan summaries — shown at the top */}
+        {plans.map(plan => (
+          <PlanCard key={plan.id} plan={plan} />
+        ))}
+
+        {/* Verification results — shown proactively */}
+        {verifications.map(v => (
+          <VerificationCard key={v.id} result={v} />
+        ))}
+
+        {/* Chat messages */}
         {messages.map(msg => (
           <motion.div
             key={msg.id}

@@ -230,11 +230,22 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
               {((window as any).__zbotEvents || []).slice(-3).map((evt: any, i: number) => (
                 <div key={i} className="flex items-center gap-1.5 rounded-md border border-cyan-500/15 bg-cyan-500/[0.04] px-2 py-1">
                   <span className={`font-mono text-[10px] ${
+                    evt.type === 'plan_start' || evt.type === 'plan_complete' ? 'text-violet-400' :
+                    evt.type === 'verify_start' ? 'text-amber-400' :
+                    evt.type === 'verify_complete' ? 'text-emerald-400' :
                     evt.type === 'tool_error' ? 'text-red-400' :
                     evt.type === 'tool_result' ? 'text-emerald-400' :
+                    evt.type === 'memory_loaded' ? 'text-blue-400' :
                     'text-cyan-400/60'
                   }`}>
-                    {evt.type === 'tool_called' ? '⟳' : evt.type === 'tool_result' ? '✓' : evt.type === 'tool_error' ? '✗' : '→'}
+                    {evt.type === 'plan_start' ? '◉' :
+                     evt.type === 'plan_complete' ? '◈' :
+                     evt.type === 'verify_start' ? '◎' :
+                     evt.type === 'verify_complete' ? '✓' :
+                     evt.type === 'memory_loaded' ? '⧫' :
+                     evt.type === 'tool_called' ? '⟳' :
+                     evt.type === 'tool_result' ? '✓' :
+                     evt.type === 'tool_error' ? '✗' : '→'}
                   </span>
                   <span className="font-mono text-[10px] text-white/50">{evt.summary}</span>
                 </div>
@@ -362,18 +373,33 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
                     className="flex items-center gap-2"
                   >
                     <span className={`font-mono text-[10px] ${
+                      evt.type === 'plan_start' ? 'text-violet-400/80' :
+                      evt.type === 'plan_complete' ? 'text-violet-300/80' :
+                      evt.type === 'verify_start' ? 'text-amber-400/80' :
+                      evt.type === 'verify_complete' && evt.content.includes('APPROVED') ? 'text-emerald-400/80' :
+                      evt.type === 'verify_complete' ? 'text-amber-400/80' :
+                      evt.type === 'memory_loaded' ? 'text-blue-400/60' :
                       evt.type === 'tool_called' ? 'text-cyan-400/60' :
                       evt.type === 'tool_result' ? 'text-emerald-400/60' :
                       evt.type === 'tool_error' ? 'text-red-400/60' :
                       'text-white/30'
                     }`}>
-                      {evt.type === 'tool_called' ? '⟳' :
+                      {evt.type === 'plan_start' ? '◉' :
+                       evt.type === 'plan_complete' ? '◈' :
+                       evt.type === 'verify_start' ? '◎' :
+                       evt.type === 'verify_complete' && evt.content.includes('APPROVED') ? '✓' :
+                       evt.type === 'verify_complete' ? '↻' :
+                       evt.type === 'memory_loaded' ? '⧫' :
+                       evt.type === 'tool_called' ? '⟳' :
                        evt.type === 'tool_result' ? '✓' :
                        evt.type === 'tool_error' ? '✗' :
-                       evt.type === 'turn_start' ? '→' :
-                       evt.type === 'memory_loaded' ? '🧠' : '·'}
+                       evt.type === 'turn_start' ? '→' : '·'}
                     </span>
-                    <span className="font-mono text-[10px] text-white/40">{evt.content}</span>
+                    <span className={`font-mono text-[10px] ${
+                      evt.type === 'verify_complete' && evt.content.includes('APPROVED') ? 'text-emerald-400/60' :
+                      evt.type === 'verify_complete' ? 'text-amber-400/60' :
+                      'text-white/40'
+                    }`}>{evt.content}</span>
                   </motion.div>
                 ))}
               </div>

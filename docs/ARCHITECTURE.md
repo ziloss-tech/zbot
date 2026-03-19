@@ -26,26 +26,12 @@ ZBOT uses a brain-region naming convention where each component maps to a specif
   ```
 - **Key behavior**: Hybrid BM25 + vector search with time decay and diversity re-ranking (0.92 cosine threshold)
 
-### Thalamus (Oversight Engine)
-- **Role**: Observes Cortex via event bus, answers user questions about ongoing work, suggests preparations, flags drift
-- **Implementation**: `internal/webui/frontend/src/components/ThalamusPane.tsx` (frontend), backend endpoint TBD
-- **Cost**: 5-15% overhead (lazy evaluation — only calls LLM when triggered)
-- **Backend prompt** (injected when triggered):
-  ```
-  You are Thalamus, the oversight engine. You can see what
-  Cortex is doing via its event log (below). You do NOT
-  see raw tokens — only structured events.
-
-  Your roles:
-  1. Answer user questions about Cortex's work
-  2. Flag drift: is Cortex still aligned with the plan?
-  3. Suggest preparation: "while Cortex does X, should I prepare Y?"
-  4. Intervene if Amygdala flags danger
-
-  ## Cortex event log (last 20 events)
-  [compact JSON array — ~500 tokens total]
-  ```
-- **Key behavior**: Reads event bus metadata (~50 tokens/event), NOT raw Cortex context
+### Thalamus (Oversight Engine) — LIVE
+- **Role**: Automatic Socratic verification of every Cortex reply + user-triggered Q&A about ongoing work
+- **Implementation**: `internal/agent/cognitive.go` → `verifyReply()` (backend), `internal/webui/frontend/src/components/ThalamusPane.tsx` (frontend), `internal/webui/thalamus_handler.go` (manual Q&A endpoint)
+- **Cost**: ~$0.001/turn (Haiku) for auto-verification + optional user-triggered Q&A (same cost model as before)
+- **Key behavior**: Runs automatic Socratic verification on every Cortex reply as Stage 5 of the cognitive loop. Uses Haiku to check for hallucination, drift, and confidence. Rejects replies below confidence threshold and sends revision suggestions back to Cortex. Also supports manual Q&A — user types a question, Thalamus reads event bus metadata to answer.
+- **Events emitted**: `verify_start`, `verify_complete` (with `approved`, `confidence`, `issues`, `suggestion` in detail)
 
 ### Amygdala (Safety/Failsafe)
 - **Role**: Threat detection, cost monitoring, drift detection
@@ -59,21 +45,12 @@ ZBOT uses a brain-region naming convention where each component maps to a specif
 - **Cost**: Zero LLM tokens (HTTP calls, file I/O, subprocess execution)
 - **Key behavior**: Cortex decides what tools to call, Cerebellum does the work. Results flow back through the event bus.
 
-### Frontal Lobe (Executive Planner) — v0.2
-- **Role**: Decides WHAT to do before Cortex decides HOW to do it
-- **Implementation**: Not yet built
-- **Cost**: ~200 tokens (cheap Haiku classifier)
-- **Backend prompt** (planned):
-  ```
-  You are the executive planner. Given this user message,
-  classify the intent and output a structured plan:
-  {type: "chat" | "task" | "research" | "clarify"}
-  {steps: [...]}
-  {model_tier: "fast" | "default" | "advanced"}
-  {needs_memory: true/false}
-  {risk_level: "low" | "medium" | "high"}
-  ```
-- **Key behavior**: Separates planning from execution. Currently Cortex does both.
+### Frontal Lobe (Executive Planner) — LIVE
+- **Role**: Decides WHAT to do before Cortex decides HOW to do it (Stage 1 of cognitive loop)
+- **Implementation**: `internal/agent/cognitive.go` → `planTask()`
+- **Cost**: ~$0.001/turn (Haiku classifier)
+- **Key behavior**: Classifies every user message into a structured TaskPlan before Cortex executes. Outputs type (chat/task/research/code/clarify), complexity, step count, recommended model tier, and verification level. Separates planning from execution — Cortex receives the plan and focuses on HOW.
+- **Events emitted**: `plan_start`, `plan_complete` (with `type`, `complexity`, `steps`, `verification` in detail)
 
 ## Event Bus
 
@@ -89,11 +66,16 @@ The event bus (`internal/agent/eventbus.go`) is the nervous system connecting al
 | Event | Source | Description |
 |-------|--------|-------------|
 | `turn_start` | Cortex | New user turn begins |
-| `memory_loaded` | Hippocampus | N facts injected into context |
+| `plan_start` | Frontal Lobe | Planning stage begins |
+| `plan_complete` | Frontal Lobe | Plan ready (detail: type, complexity, steps, verification) |
+| `memory_loaded` | Hippocampus | N facts injected into context (initial load or mid-task enrichment via `detail.stage`) |
 | `tool_called` | Cortex | Tool execution starting |
 | `tool_result` | Cerebellum | Tool completed successfully |
 | `tool_error` | Cerebellum | Tool execution failed |
-| `turn_complete` | Cortex | Turn finished (tokens, cost, tools used) |
+| `verify_start` | Thalamus | Automatic Socratic verification begins |
+| `verify_complete` | Thalamus | Verification done (detail: approved, confidence, issues, suggestion) |
+| `memory_enrich` | Hippocampus | Mid-task enrichment found related memories |
+| `turn_complete` | Cortex | Turn finished (detail: tokens, cost_usd, tools used) |
 | `cost_update` | Cortex | Running cost total for session |
 | `file_read` | Cerebellum | File accessed (for code mode UI) |
 | `file_write` | Cerebellum | File modified (for code mode UI) |
@@ -102,49 +84,69 @@ The event bus (`internal/agent/eventbus.go`) is the nervous system connecting al
 | `confirm_needed` | Amygdala | Destructive op requires user confirmation |
 | `security_flag` | Amygdala | Security concern detected |
 
-## The Agent Loop (agent.go → Run())
+## The Agent Loop — 5-Stage Cognitive Loop (agent.go → Run())
 
 ```
-1. User message arrives
-2. Hippocampus: search memory for relevant facts (0 LLM tokens)
-3. Build system prompt: base + temporal awareness + memory + skills
-4. Attach 12 tool definitions
-5. LOOP (up to MaxToolRounds=10):
-   a. Send messages[] to Claude Sonnet 4.6
-   b. If stop_reason == "end_turn" → break, return reply
-   c. If stop_reason == "tool_use":
-      - Amygdala: validate tool inputs (0 LLM tokens)
-      - If destructive: require user confirmation
-      - Cerebellum: execute tool(s)
-      - Append tool results to messages[]
-      - Event bus: emit tool_called + tool_result
-      - Continue loop
-6. Emit turn_complete event
-7. Background: extract facts for Hippocampus (Haiku, ~100 tokens)
-8. Return reply to user
+Stage 1 — Frontal Lobe (planning):
+  - planTask() classifies user message via Haiku (~$0.001)
+  - Outputs TaskPlan: type, complexity, steps, model tier, verification level
+  - Events: plan_start → plan_complete
+
+Stage 2 — Hippocampus (initial memory load):
+  - Search memory for relevant facts (0 LLM tokens)
+  - Build system prompt: base + temporal awareness + memory + skills + plan
+  - Event: memory_loaded
+
+Stage 3 — Cortex (execution):
+  - Attach tool definitions
+  - LOOP (up to MaxToolRounds=10):
+    a. Send messages[] to Claude Sonnet 4.6 (or tier from plan)
+    b. If stop_reason == "end_turn" → break, return reply
+    c. If stop_reason == "tool_use":
+       - Amygdala: validate tool inputs (0 LLM tokens)
+       - If destructive: require user confirmation
+       - Cerebellum: execute tool(s)
+       - Append tool results to messages[]
+       - Event bus: emit tool_called + tool_result
+       - Continue loop
+
+Stage 4 — Hippocampus (mid-task enrichment):
+  - enrichMemory() searches memory based on tool results (0 LLM tokens)
+  - Injects additional relevant facts mid-task
+  - Event: memory_loaded (detail.stage = "enrichment")
+
+Stage 5 — Thalamus (verification):
+  - verifyReply() runs Socratic check via Haiku (~$0.001)
+  - If APPROVED → emit turn_complete, return reply
+  - If REJECTED → emit verify_complete (with issues), loop back to Stage 3 for revision
+  - Events: verify_start → verify_complete
+
+Background: extract facts for Hippocampus (Haiku, ~100 tokens)
 ```
 
 ## Cost Model
 
 | Component | LLM Cost | When |
 |-----------|----------|------|
-| Cortex | 100% of cost | Every turn |
-| Hippocampus | 0 | Database query |
-| Thalamus | 5-15% extra | Only when triggered |
+| Cortex | Main cost center | Every turn (Sonnet default, Opus for complex) |
+| Hippocampus | 0 | Database query (initial + enrichment) |
+| Thalamus (auto) | ~$0.001/turn | Every turn (Haiku verification) |
+| Thalamus (manual Q&A) | 5-15% extra | Only when user asks |
 | Amygdala | 0 | Rule-based Go code |
 | Cerebellum | 0 | HTTP/file/subprocess |
-| Frontal Lobe (v0.2) | ~200 tokens | Per turn (Haiku) |
+| Frontal Lobe | ~$0.001/turn | Every turn (Haiku classifier) |
 | Memory extraction | ~100 tokens | Background (Haiku) |
 
 ## File Map
 
 ```
-cmd/zbot/wire.go               — Dependency injection, wires everything together
+cmd/zbot/wire.go               — Dependency injection, wires everything together (+ dotenv loader)
 internal/agent/
-  ports.go                      — All interfaces (LLMClient, MemoryStore, EventBus, etc.)
-  agent.go                      — Core agent loop (Run method)
+  ports.go                      — All interfaces (LLMClient, MemoryStore, EventBus, etc.) + event types
+  agent.go                      — 5-stage cognitive Run() loop
+  cognitive.go                  — planTask (Frontal Lobe), enrichMemory (Hippocampus), verifyReply (Thalamus)
   eventbus.go                   — In-memory event bus implementation
-  router.go                     — Model tier routing (Haiku/Sonnet/Opus)
+  router.go                     — Model tier routing (Haiku/Sonnet/Opus) + ModelTierCost()
 internal/prompts/
   claude_prompts.go             — System prompts (ClaudeExecutorSystem, etc.)
   reasoning_prompts.go          — Reasoning module (injected for complex tasks)
@@ -162,11 +164,19 @@ internal/memory/
 internal/tools/                 — All tool implementations
 internal/security/              — Amygdala: validation, sanitization, confirmation
 internal/webui/
-  frontend/src/components/
-    ChatPane.tsx                — Cortex chat interface
-    ThalamusPane.tsx            — Thalamus oversight interface
-    PaneManager.tsx             — Adaptive split-pane layout
-    Sidebar.tsx                 — Navigation
+  api_handlers.go               — HTTP API handlers (metrics with in-memory counters)
+  chat_stream_handler.go        — POST /api/chat/stream (relays event bus as SSE)
+  events_handler.go             — GET /api/events/:sessionID (SSE endpoint)
+  thalamus_handler.go           — POST /api/thalamus (manual Q&A)
+  frontend/src/
+    hooks/useEventBus.ts        — React hook consuming SSE events
+    components/
+      ChatPane.tsx              — Cortex chat (renders cognitive events in activity strip)
+      ThalamusPane.tsx           — Thalamus pane (auto-verification display + event bus)
+      PaneManager.tsx           — Adaptive split-pane layout
+      MetricsStrip.tsx          — Top bar metrics (wired to in-memory counters)
+      Sidebar.tsx               — Navigation
+SPRINT_2.md                     — Current sprint onboarding doc
 ```
 
 ## Design Principles

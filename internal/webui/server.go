@@ -125,6 +125,35 @@ func (s *Server) Hub() *Hub {
 	return s.hub
 }
 
+// StartMetricsCollector subscribes to the event bus and accumulates
+// in-memory metrics from turn_complete events. Call this after SetEventBus.
+func (s *Server) StartMetricsCollector(ctx context.Context) {
+	if s.eventBus == nil {
+		return
+	}
+	ch := s.eventBus.Subscribe("web-chat")
+	go func() {
+		defer s.eventBus.Unsubscribe("web-chat", ch)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case evt, ok := <-ch:
+				if !ok {
+					return
+				}
+				if string(evt.Type) == "turn_complete" && evt.Detail != nil {
+					inputTokens, _ := evt.Detail["input_tokens"].(float64)
+					outputTokens, _ := evt.Detail["output_tokens"].(float64)
+					costUSD, _ := evt.Detail["cost_usd"].(float64)
+					RecordTurn(int(inputTokens), int(outputTokens), costUSD)
+				}
+			}
+		}
+	}()
+	s.logger.Info("in-memory metrics collector started")
+}
+
 // routes registers all HTTP handlers.
 func (s *Server) routes() {
 	// Static assets.
