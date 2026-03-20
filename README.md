@@ -1,4 +1,12 @@
-# ZBOT — Self-Hosted AI Agent with Memory
+<p align="center">
+  <img src="assets/zbot-logo.svg" alt="ZBOT" width="200"/>
+</p>
+
+<h1 align="center">ZBOT — Self-Hosted AI Agent with Memory</h1>
+
+<p align="center">
+  <em>Pro athlete performance for pickup game prices.</em>
+</p>
 
 Your AI agent, your hardware, your data. Run any model — Llama, Mistral, Qwen, DeepSeek, Claude, GPT — through a single interface with persistent memory, tool use, deep research, and a web UI.
 
