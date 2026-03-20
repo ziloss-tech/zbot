@@ -58,6 +58,10 @@ func (s *Skill) Tools() []agent.Tool {
 		&AuditWorkflowsTool{client: s.client},
 		&AuditContactsTool{client: s.client},
 		&CompareLocationsTool{client: s.client},
+		// Sprint 3: Automation tools.
+		&AddToWorkflowTool{client: s.client},
+		&RemoveFromWorkflowTool{client: s.client},
+		&DNDReviewTool{client: s.client},
 	}
 }
 
