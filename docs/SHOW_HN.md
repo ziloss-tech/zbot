@@ -22,7 +22,7 @@ Repo: https://github.com/ziloss-tech/zbot
 
 ## First comment (architecture details)
 
-The cognitive architecture is implemented in ~300 lines of Go across two files:
+The cognitive architecture is implemented in ~500 lines of Go across two files:
 
 `cognitive.go` has three functions: `planTask()` (Frontal Lobe), `enrichMemory()` (Hippocampus mid-task), and `verifyReply()` (Thalamus). The main loop in `agent.go` calls them in sequence.
 
