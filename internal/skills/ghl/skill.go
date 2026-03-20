@@ -54,6 +54,10 @@ func (s *Skill) Tools() []agent.Tool {
 		&GetCalendarsTool{client: s.client},
 		&GetOpportunitiesTool{client: s.client},
 		&BulkUpdateContactsTool{client: s.client},
+		// Sprint 2: Auditor tools.
+		&AuditWorkflowsTool{client: s.client},
+		&AuditContactsTool{client: s.client},
+		&CompareLocationsTool{client: s.client},
 	}
 }
 
