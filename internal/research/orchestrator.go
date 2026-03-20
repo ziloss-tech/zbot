@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zbot-ai/zbot/internal/agent"
-	"github.com/zbot-ai/zbot/internal/llm"
-	"github.com/zbot-ai/zbot/internal/prompts"
+	"github.com/ziloss-tech/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/llm"
+	"github.com/ziloss-tech/zbot/internal/prompts"
 )
 
 const (

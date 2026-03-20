@@ -4,7 +4,7 @@
 package memory
 
 import (
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // Skill implements the skills.Skill interface for persistent memory.

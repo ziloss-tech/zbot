@@ -13,7 +13,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // ─── MODEL CONSTANTS ────────────────────────────────────────────────────────

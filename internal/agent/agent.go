@@ -9,7 +9,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/zbot-ai/zbot/internal/security"
+	"github.com/ziloss-tech/zbot/internal/prompts"
+	"github.com/ziloss-tech/zbot/internal/security"
 )
 
 // ─── Model Hint Context ─────────────────────────────────────────────────────
@@ -167,14 +168,45 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		ctx = WithModelHint(ctx, input.ModelHint)
 	}
 
+	// ── STAGE 0: ROUTER — Classify the message ─────────────────────────────
+	route := a.routeMessage(ctx, input.SessionID, input.UserMsg.Content, a.cheapLLM)
+
+	// Apply Router's model tier hint if no explicit hint was given.
+	// Only escalate UP (to Opus) — never downgrade Cortex to cheap.
+	// The cheap cognitive stages (Router, Frontal Lobe, Thalamus) already use cheapLLM directly.
+	if route != nil && input.ModelHint == "" && route.ModelTier == "strong" {
+		ctx = WithModelHint(ctx, "opus")
+	}
+
 	// ── STAGE 1: FRONTAL LOBE — Plan the approach ──────────────────────────
-	plan := a.planTask(ctx, input.SessionID, input.UserMsg.Content, a.cheapLLM)
+	// Skip Frontal Lobe if Router says it's a direct answer (saves one cheapLLM call).
+	var plan *TaskPlan
+	if route != nil && route.Classification == "direct_answer" {
+		// Synthesize a minimal plan from the Router decision.
+		plan = &TaskPlan{
+			Type:         "chat",
+			Complexity:   "simple",
+			Steps:        []string{"respond directly"},
+			NeedsMemory:  false,
+			Verification: "none",
+			ModelTier:    route.ModelTier,
+			Reasoning:    "Router: " + route.Reasoning,
+		}
+	} else {
+		plan = a.planTask(ctx, input.SessionID, input.UserMsg.Content, a.cheapLLM)
+	}
 
 	// ── STAGE 2: HIPPOCAMPUS — Load relevant memories ──────────────────────
-	facts, err := a.memory.Search(ctx, input.UserMsg.Content, a.cfg.MemorySearchLimit)
-	if err != nil {
-		a.logger.Warn("memory search failed", "err", err)
-		facts = nil
+	// Skip memory search if Router says no memory needed and confidence is high.
+	skipMemory := route != nil && route.Classification == "direct_answer" && route.Confidence > 0.9
+	var facts []Fact
+	if !skipMemory {
+		var memErr error
+		facts, memErr = a.memory.Search(ctx, input.UserMsg.Content, a.cfg.MemorySearchLimit)
+		if memErr != nil {
+			a.logger.Warn("memory search failed", "err", memErr)
+			facts = nil
+		}
 	}
 	if len(facts) > 0 {
 		a.emit(ctx, input.SessionID, EventMemoryLoaded,
@@ -278,8 +310,22 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		}
 	}
 
+	// ── STALL RECOVERY — Frontal Lobe override ──────────────────────────────
+	// If Cortex asked for permission instead of executing, attempt recovery.
+	if plan != nil && len(invokedTools) == 0 && output.Reply != "" {
+		if isStalled(output.Reply, plan) {
+			recovered := a.recoverFromStall(ctx, input, plan, output.Reply, toolDefs)
+			if recovered != nil {
+				output = recovered
+			}
+		}
+	}
+
 	// ── STAGE 5: THALAMUS — Verify the reply before sending ────────────────
 	if output.Reply != "" && plan != nil && plan.Verification != "none" {
+		a.logger.Info("thalamus verification starting",
+			"reply_len", len(output.Reply),
+			"verification", plan.Verification)
 		// Collect evidence from tool results for verification context.
 		var evidence string
 		for _, msg := range messages {
@@ -370,8 +416,8 @@ func (a *Agent) buildContext(input TurnInput, facts []Fact) []Message {
 func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, plan *TaskPlan) []Message {
 	messages := make([]Message, 0, len(input.History)+4)
 
-	// System prompt with memory.
-	sysPrompt := a.buildSystemPrompt(facts)
+	// System prompt with memory — now uses Pantheon's modular builder.
+	sysPrompt := a.buildSystemPromptWithPlan(facts, plan)
 
 	// Inject plan if available.
 	if plan != nil {
@@ -397,12 +443,45 @@ func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, plan *TaskPl
 	return messages
 }
 
-// buildSystemPrompt constructs the system prompt, injecting relevant memories.
+// buildSystemPrompt constructs the system prompt using the modular builder.
+// Pantheon architecture: modules are conditionally loaded based on the Frontal Lobe's plan.
 func (a *Agent) buildSystemPrompt(facts []Fact) string {
-	base := a.cfg.SystemPrompt
+	return a.buildSystemPromptWithPlan(facts, nil)
+}
 
-	// Inject temporal awareness — the model needs to know when "now" is
-	// for time-relative reasoning (yesterday, next week, how long ago, etc.)
+// buildSystemPromptWithPlan constructs the system prompt with plan-aware module selection.
+// This is the Pantheon's prompt assembly — only load what this turn needs.
+func (a *Agent) buildSystemPromptWithPlan(facts []Fact, plan *TaskPlan) string {
+	// Build profile from plan (or use defaults if no plan).
+	profile := prompts.DefaultProfile()
+	if plan != nil {
+		// Map Frontal Lobe plan to prompt profile.
+		profile.IncludeReasoning = plan.Complexity != "simple"
+		profile.IncludeMemoryPolicy = plan.NeedsMemory || plan.Type == "research"
+		profile.IncludeToolControl = plan.Type == "code" || plan.Type == "analysis" || plan.Type == "research"
+		profile.IncludeVerification = plan.Verification == "basic" || plan.Verification == "thorough"
+
+		// Map plan type to execution mode.
+		switch plan.Type {
+		case "chat":
+			profile.ExecutionMode = "chat"
+			profile.SocraticDepth = "skip"
+		case "code", "analysis":
+			profile.ExecutionMode = "safe_autopilot"
+			profile.SocraticDepth = "minimal"
+		case "research":
+			profile.ExecutionMode = "safe_autopilot"
+			profile.SocraticDepth = "deep"
+		default:
+			profile.ExecutionMode = "chat"
+			profile.SocraticDepth = "skip"
+		}
+	}
+
+	// Assemble the prompt using the modular builder.
+	base := prompts.BuildExecutorPrompt(profile, "")
+
+	// Inject temporal awareness.
 	now := time.Now()
 	temporal := fmt.Sprintf("\n\n## Current Time\nCurrent date and time: %s\nTimezone: %s\nDay of week: %s",
 		now.Format("2006-01-02 15:04:05"),
@@ -410,17 +489,17 @@ func (a *Agent) buildSystemPrompt(facts []Fact) string {
 		now.Format("Monday"))
 	base += temporal
 
-	if len(facts) == 0 {
-		return base
+	// Inject relevant memories.
+	if len(facts) > 0 {
+		memSection := "\n\n## Relevant Memory\n"
+		for _, f := range facts {
+			memSection += fmt.Sprintf("- %s (saved: %s)\n", f.Content, f.CreatedAt.Format("2006-01-02"))
+		}
+		base += memSection
 	}
 
-	memSection := "\n\n## Relevant Memory\n"
-	for _, f := range facts {
-		memSection += fmt.Sprintf("- %s (saved: %s)\n", f.Content, f.CreatedAt.Format("2006-01-02"))
-	}
-	return base + memSection
+	return base
 }
-
 // emit is a helper that publishes an event to the bus (nil-safe).
 func (a *Agent) emit(ctx context.Context, sessionID string, evtType EventType, summary string, detail map[string]any) {
 	if a.events == nil {
@@ -526,6 +605,22 @@ func (a *Agent) executeTools(
 			a.emit(ctx, sessionID, EventToolResult, fmt.Sprintf("%s done", call.Name), map[string]any{
 				"tool": call.Name, "duration_ms": durationMs,
 			})
+		}
+
+		// Sprint 3: Emit file_read/file_write events for code mode UI.
+		if !result.IsError {
+			if call.Name == "read_file" {
+				if path, ok := call.Input["path"].(string); ok {
+					a.emit(ctx, sessionID, EventFileRead, path, map[string]any{"path": path})
+				}
+			} else if call.Name == "write_file" {
+				if path, ok := call.Input["path"].(string); ok {
+					a.emit(ctx, sessionID, EventFileWrite, path, map[string]any{
+						"path": path,
+						"size": len(result.Content),
+					})
+				}
+			}
 		}
 
 		results = append(results, *result)

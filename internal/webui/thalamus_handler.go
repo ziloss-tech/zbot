@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // ThalamusSystemPrompt defines Thalamus as a separate AI identity.

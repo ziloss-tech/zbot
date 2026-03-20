@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // fmtVec formats a []float32 as a pgvector literal: "[0.1,0.2,...]"

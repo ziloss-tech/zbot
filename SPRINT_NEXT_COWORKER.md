@@ -4,7 +4,7 @@
 You are working on ZBOT, a self-hosted AI agent with brain-region architecture.
 The codebase is at: ~/Desktop/Projects/zbot
 GitHub: https://github.com/ziloss-tech/zbot (public, Apache 2.0)
-GCP Project: ziloss
+GCP Project: your-project
 
 ## Current State (What Just Shipped — March 17-18, 2026)
 

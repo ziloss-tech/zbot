@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // ─── SAVE MEMORY TOOL ────────────────────────────────────────────────────────

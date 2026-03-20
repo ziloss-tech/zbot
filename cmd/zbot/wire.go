@@ -15,28 +15,28 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/zbot-ai/zbot/internal/agent"
-	"github.com/zbot-ai/zbot/internal/audit"
-	"github.com/zbot-ai/zbot/internal/gateway"
-	"github.com/zbot-ai/zbot/internal/llm"
-	"github.com/zbot-ai/zbot/internal/memory"
-	"github.com/zbot-ai/zbot/internal/platform"
-	"github.com/zbot-ai/zbot/internal/prompts"
-	"github.com/zbot-ai/zbot/internal/scheduler"
-	"github.com/zbot-ai/zbot/internal/scraper"
-	"github.com/zbot-ai/zbot/internal/secrets"
-	"github.com/zbot-ai/zbot/internal/skills"
-	skillEmail "github.com/zbot-ai/zbot/internal/skills/email"
-	skillGHL "github.com/zbot-ai/zbot/internal/skills/ghl"
-	skillGitHub "github.com/zbot-ai/zbot/internal/skills/github"
-	skillMemory "github.com/zbot-ai/zbot/internal/skills/memory"
-	skillSearch "github.com/zbot-ai/zbot/internal/skills/search"
-	skillSheets "github.com/zbot-ai/zbot/internal/skills/sheets"
-	"github.com/zbot-ai/zbot/internal/research"
-	"github.com/zbot-ai/zbot/internal/security"
-	"github.com/zbot-ai/zbot/internal/tools"
-	"github.com/zbot-ai/zbot/internal/webui"
-	"github.com/zbot-ai/zbot/internal/workflow"
+	"github.com/ziloss-tech/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/audit"
+	"github.com/ziloss-tech/zbot/internal/gateway"
+	"github.com/ziloss-tech/zbot/internal/llm"
+	"github.com/ziloss-tech/zbot/internal/memory"
+	"github.com/ziloss-tech/zbot/internal/platform"
+	"github.com/ziloss-tech/zbot/internal/prompts"
+	"github.com/ziloss-tech/zbot/internal/scheduler"
+	"github.com/ziloss-tech/zbot/internal/scraper"
+	"github.com/ziloss-tech/zbot/internal/secrets"
+	"github.com/ziloss-tech/zbot/internal/skills"
+	skillEmail "github.com/ziloss-tech/zbot/internal/skills/email"
+	skillGHL "github.com/ziloss-tech/zbot/internal/skills/ghl"
+	skillGitHub "github.com/ziloss-tech/zbot/internal/skills/github"
+	skillMemory "github.com/ziloss-tech/zbot/internal/skills/memory"
+	skillSearch "github.com/ziloss-tech/zbot/internal/skills/search"
+	skillSheets "github.com/ziloss-tech/zbot/internal/skills/sheets"
+	"github.com/ziloss-tech/zbot/internal/research"
+	"github.com/ziloss-tech/zbot/internal/security"
+	"github.com/ziloss-tech/zbot/internal/tools"
+	"github.com/ziloss-tech/zbot/internal/webui"
+	"github.com/ziloss-tech/zbot/internal/workflow"
 )
 
 // defaultSystemPrompt is ZBOT's base instruction set.
@@ -129,6 +129,7 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	appToken, _ := sm.Get(ctx, "zbot-slack-app-token")
 	anthropicKey, _ := sm.Get(ctx, secrets.SecretAnthropicAPIKey)
 	braveKey, _ := sm.Get(ctx, secrets.SecretBraveAPIKey)
+	deepInfraKey, _ := sm.Get(ctx, secrets.SecretDeepInfraAPIKey)
 	serperKey := os.Getenv("ZBOT_SERPER_API_KEY")
 	if serperKey == "" {
 		serperKey, _ = sm.Get(ctx, "serper-api-key")
@@ -242,8 +243,11 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	logger.Info("v2: single-brain architecture — Claude handles planning + execution + self-critique")
 
 	// ── Sprint D: Memory Flusher (context window compaction safety net) ────
+	// Uses the cheapest available model: DeepSeek V3.2 > Haiku > primary model.
 	var cheapModelClient agent.LLMClient
-	if useOpenAICompat {
+	if deepInfraKey != "" {
+		cheapModelClient = llm.NewDeepSeekCheapClient(deepInfraKey, logger)
+	} else if useOpenAICompat {
 		cheapModelClient = llmClient
 	} else {
 		cheapModelClient = llm.NewHaikuClient(anthropicKey, logger)
@@ -406,6 +410,9 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// Event bus for Thalamus oversight + UI streaming.
 	eventBus := agent.NewMemEventBus(200)
 
+	// Wire the Router prompt from the prompts package.
+	agent.SetRouterPrompt(prompts.RouterSystem)
+
 	ag := agent.New(
 		agentCfg,
 		llmClient,
@@ -421,11 +428,16 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	ag.SetConfirmationStore(confirmStore)
 
 	// Wire cheap LLM for Frontal Lobe (planning) + Thalamus (verification).
-	// Uses Haiku for Anthropic users, or the same model for OpenAI-compat (already cheap).
-	if anthropicKey != "" {
+	// Priority: DeepSeek V3.2 via DeepInfra ($0.14/M) > Haiku ($0.25/M) > primary model > disabled.
+	if deepInfraKey != "" {
+		cheapLLM := llm.NewDeepSeekCheapClient(deepInfraKey, logger)
+		ag.SetCheapLLM(cheapLLM)
+		logger.Info("cognitive stages enabled (DeepSeek V3.2 via DeepInfra — $0.14/M)",
+			"model", llm.DeepSeekV3Model)
+	} else if anthropicKey != "" {
 		cheapLLM := llm.NewHaikuClient(anthropicKey, logger)
 		ag.SetCheapLLM(cheapLLM)
-		logger.Info("cognitive stages enabled (Frontal Lobe + Thalamus verification)")
+		logger.Info("cognitive stages enabled (Haiku fallback — $0.25/M)")
 	} else if useOpenAICompat {
 		ag.SetCheapLLM(llmClient) // open models are already cheap
 		logger.Info("cognitive stages enabled (using primary model for planning/verification)")
@@ -444,8 +456,11 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			orch = workflow.NewOrchestrator(wfStore, dataStore, ag, cfg.WorkerCount, logger)
 
 			// Sprint 12: Wire memory auto-save with cheap model for insight extraction.
+			// Uses the cheapest available: DeepSeek V3.2 > Haiku > primary model.
 			var cheapClient agent.LLMClient
-			if useOpenAICompat {
+			if deepInfraKey != "" {
+				cheapClient = llm.NewDeepSeekCheapClient(deepInfraKey, logger)
+			} else if useOpenAICompat {
 				cheapClient = llmClient
 			} else {
 				cheapClient = llm.NewHaikuClient(anthropicKey, logger)
@@ -590,10 +605,17 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		logger.Warn("deep research v1 disabled — needs openrouter-api-key + Postgres")
 	}
 
-	// ── v2 Deep Research Pipeline (Haiku → Sonnet, no external deps) ─────
+	// ── v2 Deep Research Pipeline (cheap model → Sonnet, no external deps) ─────
 	var researchOrchV2 *research.V2ResearchOrchestrator
 	if pgDB != nil && researchStore != nil {
-		haikuClient := llm.NewHaikuClient(anthropicKey, logger)
+		// Phase 1 uses cheapest available: DeepSeek V3.2 > Haiku.
+		var phase1Client agent.LLMClient
+		if deepInfraKey != "" {
+			phase1Client = llm.NewDeepSeekCheapClient(deepInfraKey, logger)
+		} else {
+			phase1Client = llm.NewHaikuClient(anthropicKey, logger)
+		}
+		haikuClient := phase1Client // keep name for backward compat with constructor
 		budgetTracker := research.NewBudgetTracker(pgDB)
 
 		researchOrchV2 = research.NewV2ResearchOrchestrator(
@@ -954,28 +976,34 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	webServer.SetEventBus(eventBus)
 	webServer.StartMetricsCollector(ctx)
 	webServer.SetLLMClient(llmClient)
-	// In-memory conversation history for web chat sessions.
-	// Keeps the last 20 exchanges (40 messages) per session.
-	type convEntry struct {
-		msgs []agent.Message
+	// Persistent conversation history via SQLite (survives restarts).
+	historyDBPath := filepath.Join(workspaceRoot, ".cache", "history.db")
+	chatHistory, histErr := memory.NewSQLiteHistory(historyDBPath)
+	if histErr != nil {
+		logger.Warn("SQLite history unavailable — falling back to in-memory", "err", histErr)
+	} else {
+		logger.Info("persistent chat history ready", "path", historyDBPath)
+		defer chatHistory.Close()
 	}
-	convHistory := make(map[string]*convEntry)
-	var convMu sync.Mutex
 	const maxHistory = 40 // 20 user + 20 assistant messages
 
 	webServer.SetQuickChat(func(ctx context.Context, message string) (string, error) {
 		sessionID := "web-chat"
 
-		convMu.Lock()
-		if convHistory[sessionID] == nil {
-			convHistory[sessionID] = &convEntry{}
+		// Load history from SQLite (falls back to empty if unavailable).
+		var historyMsgs []agent.Message
+		if chatHistory != nil {
+			loaded, loadErr := chatHistory.LoadHistory(sessionID, maxHistory)
+			if loadErr != nil {
+				logger.Warn("failed to load chat history", "err", loadErr)
+			} else {
+				historyMsgs = loaded
+			}
 		}
-		history := convHistory[sessionID]
-		convMu.Unlock()
 
 		turnInput := agent.TurnInput{
 			SessionID: sessionID,
-			History:   history.msgs,
+			History:   historyMsgs,
 			UserMsg: agent.Message{
 				Role:      agent.RoleUser,
 				Content:   message,
@@ -988,20 +1016,21 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			return "", fmt.Errorf("agent.Run: %w", err)
 		}
 
-		// Append this exchange to history.
-		convMu.Lock()
-		history.msgs = append(history.msgs,
-			agent.Message{Role: agent.RoleUser, Content: message, CreatedAt: time.Now()},
-			agent.Message{Role: agent.RoleAssistant, Content: result.Reply, CreatedAt: time.Now()},
-		)
-		// Trim to keep last maxHistory messages.
-		if len(history.msgs) > maxHistory {
-			history.msgs = history.msgs[len(history.msgs)-maxHistory:]
+		// Persist both messages to SQLite.
+		if chatHistory != nil {
+			_ = chatHistory.SaveMessage(sessionID, string(agent.RoleUser), message)
+			_ = chatHistory.SaveMessage(sessionID, string(agent.RoleAssistant), result.Reply)
 		}
-		convMu.Unlock()
 
 		return result.Reply, nil
 	})
+
+	// Wire chat history clear endpoint.
+	if chatHistory != nil {
+		webServer.SetClearChatHistory(func() error {
+			return chatHistory.ClearHistory("web-chat")
+		})
+	}
 
 	if pgDB != nil {
 		// Sprint 12: Wire memory store for memory panel API.

@@ -10,10 +10,10 @@ import (
 	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/zbot-ai/zbot/internal/agent"
-	"github.com/zbot-ai/zbot/internal/research"
-	"github.com/zbot-ai/zbot/internal/scheduler"
-	"github.com/zbot-ai/zbot/internal/workflow"
+	"github.com/ziloss-tech/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/research"
+	"github.com/ziloss-tech/zbot/internal/scheduler"
+	"github.com/ziloss-tech/zbot/internal/workflow"
 )
 
 // ResearchSlackNotifier sends a Slack message when deep research completes.
@@ -49,8 +49,9 @@ type Server struct {
 	notifyChannelID string                        // Deep Research: channel/DM to notify
 	// Sprint 20: Persistent Claude chat (Slack ↔ UI).
 	chatStore      *ChatStore
-	eventBus       agent.EventBus
-	persistentChat PersistentChatFunc
+	eventBus          agent.EventBus
+	persistentChat    PersistentChatFunc
+	clearChatHistory  func() error // Sprint 3: clear SQLite conversation history
 }
 
 // New creates a web UI server on port 18790.
@@ -120,6 +121,11 @@ func (s *Server) SetPersistentChat(fn PersistentChatFunc) {
 	s.persistentChat = fn
 }
 
+// SetClearChatHistory sets the function to clear persistent chat history.
+func (s *Server) SetClearChatHistory(fn func() error) {
+	s.clearChatHistory = fn
+}
+
 // Hub returns the SSE hub for external event publishing (e.g., from orchestrator).
 func (s *Server) Hub() *Hub {
 	return s.hub
@@ -143,10 +149,25 @@ func (s *Server) StartMetricsCollector(ctx context.Context) {
 					return
 				}
 				if string(evt.Type) == "turn_complete" && evt.Detail != nil {
-					inputTokens, _ := evt.Detail["input_tokens"].(float64)
-					outputTokens, _ := evt.Detail["output_tokens"].(float64)
-					costUSD, _ := evt.Detail["cost_usd"].(float64)
-					RecordTurn(int(inputTokens), int(outputTokens), costUSD)
+					// Handle both int and float64 — agent emits int, but JSON round-trips produce float64.
+					var inputTokens, outputTokens int
+					if v, ok := evt.Detail["input_tokens"].(int); ok {
+						inputTokens = v
+					} else if v, ok := evt.Detail["input_tokens"].(float64); ok {
+						inputTokens = int(v)
+					}
+					if v, ok := evt.Detail["output_tokens"].(int); ok {
+						outputTokens = v
+					} else if v, ok := evt.Detail["output_tokens"].(float64); ok {
+						outputTokens = int(v)
+					}
+					var costUSD float64
+					if v, ok := evt.Detail["cost_usd"].(float64); ok {
+						costUSD = v
+					} else if v, ok := evt.Detail["cost_usd"].(int); ok {
+						costUSD = float64(v)
+					}
+					RecordTurn(inputTokens, outputTokens, costUSD)
 				}
 			}
 		}
@@ -207,6 +228,7 @@ func (s *Server) routes() {
 	// Sprint 12 — Quick Chat API.
 	s.mux.HandleFunc("/api/chat", s.handleQuickChatAPI)
 	s.mux.HandleFunc("/api/chat/stream", s.handleChatStreamAPI)
+	s.mux.HandleFunc("/api/chat/history", s.handleChatHistoryClearAPI)
 	s.mux.HandleFunc("/api/thalamus", s.handleThalamusAPI)
 	s.mux.HandleFunc("/api/events/", s.handleEventBusSSE)
 

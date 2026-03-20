@@ -2,7 +2,7 @@
 package ghl
 
 import (
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // Skill wraps the GHL client and tools into a skills.Skill implementation.

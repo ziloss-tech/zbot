@@ -1,4 +1,4 @@
-module github.com/zbot-ai/zbot
+module github.com/ziloss-tech/zbot
 
 go 1.26.0
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // CodeRunnerTool runs code in a sandboxed Docker container.

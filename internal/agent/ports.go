@@ -99,7 +99,8 @@ type ToolResult struct {
 type ModelTier string
 
 const (
-	ModelTierHaiku  ModelTier = "haiku"  // Bulk extraction, lightweight classification
+	ModelTierCheap  ModelTier = "cheap"  // DeepSeek V3.2: Frontal Lobe, Thalamus, Hypothalamus ($0.14/$0.28 per M)
+	ModelTierHaiku  ModelTier = "haiku"  // Anthropic Haiku: fallback cheap model ($0.25/$1.25 per M)
 	ModelTierSonnet ModelTier = "sonnet" // Default brain — planning, execution, self-critique
 	ModelTierOpus   ModelTier = "opus"   // Complex reasoning escalation
 	ModelTierAuto   ModelTier = "auto"   // Let the router decide based on content
@@ -294,7 +295,9 @@ const (
 	EventPlanComplete  EventType = "plan_complete"
 	EventVerifyStart   EventType = "verify_start"
 	EventVerifyComplete EventType = "verify_complete"
-	EventMemoryEnrich  EventType = "memory_enrich"
+	EventMemoryEnrich    EventType = "memory_enrich"
+	EventStallDetected   EventType = "stall_detected"
+	EventStallRecovered  EventType = "stall_recovered"
 )
 
 // AgentEvent is a structured event emitted by Cortex as it works.

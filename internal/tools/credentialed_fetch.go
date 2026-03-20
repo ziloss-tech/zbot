@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zbot-ai/zbot/internal/agent"
-	"github.com/zbot-ai/zbot/internal/scraper"
+	"github.com/ziloss-tech/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/scraper"
 )
 
 // CredentialType describes how a stored credential should be applied to requests.

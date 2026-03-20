@@ -8,7 +8,7 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // OpenRouter base URL — uses OpenAI-compatible API format.
@@ -197,16 +197,21 @@ var ModelDisplayNames = map[string]string{
 	"meta-llama/llama-3.3-70b-instruct":    "Llama 3.3 70B · Meta",
 	"mistralai/mixtral-8x22b-instruct":     "Mixtral 8x22B · Mistral AI",
 	"mistralai/mistral-small-3.1":          "Mistral Small 3.1 · Mistral AI",
+	"deepseek-ai/DeepSeek-V3-0324":         "DeepSeek V3.2 · DeepSeek",
+	"moonshotai/kimi-k2":                   "Kimi K2 · Moonshot",
 	"gpt-4o":                               "GPT-4o · OpenAI",
 	"claude-sonnet-4-6":                    "Claude Sonnet 4.6 · Anthropic",
 }
 
 // ─── BLOCKED MODELS ────────────────────────────────────────────────────────
 
-// BlockedModelPrefixes — hard-coded exclusion list. No Chinese models.
+// BlockedModelPrefixes — hard-coded exclusion list.
+// NOTE: deepseek and moonshot removed — they are now part of the Pantheon architecture.
+// DeepSeek V3.2 = Frontal Lobe + Thalamus + Hypothalamus (cheapLLM).
+// Kimi K2 (moonshot) = overnight autonomous Cortex.
 var BlockedModelPrefixes = []string{
-	"deepseek", "qwen", "yi-", "ernie", "baidu",
-	"minimax", "moonshot", "zhipu", "internlm", "01-ai",
+	"qwen", "yi-", "ernie", "baidu",
+	"minimax", "zhipu", "internlm", "01-ai",
 }
 
 // IsModelBlocked returns true if the model ID matches any blocked prefix.
@@ -235,6 +240,8 @@ var modelCostPer1M = map[string]costRate{
 	"meta-llama/llama-3.3-70b-instruct":  {input: 0.07, output: 0.07},
 	"mistralai/mixtral-8x22b-instruct":   {input: 0.65, output: 0.65},
 	"mistralai/mistral-small-3.1":        {input: 0.10, output: 0.30},
+	"deepseek-ai/DeepSeek-V3-0324":      {input: 0.14, output: 0.28},
+	"moonshotai/kimi-k2":                {input: 0.60, output: 2.50},
 	// Direct API models (not via OpenRouter, but track costs).
 	"gpt-4o":           {input: 5.0, output: 15.0},
 	"claude-sonnet-4-6": {input: 3.0, output: 15.0},

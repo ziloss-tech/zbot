@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // mockSecrets implements agent.SecretsManager for testing.

@@ -9,7 +9,7 @@ import (
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 	"google.golang.org/api/iterator"
 )
 
@@ -129,12 +129,13 @@ func (s *GCPSecretManager) Close() error {
 // SecretNames maps to actual GCP Secret Manager names in the your GCP project.
 // Using existing secrets where possible — only zbot-telegram-token is new.
 const (
-	SecretAnthropicAPIKey = "ANTHROPIC_API_KEY"    // existing
-	SecretOpenAIAPIKey    = "openai-api-key"        // existing
-	SecretBraveAPIKey     = "brave-search-api-key"  // existing
-	SecretDatabaseURL     = "database-url"          // existing (full postgres URL)
-	SecretTelegramToken   = "zbot-telegram-token"   // new — add after BotFather setup
-	SecretProxyURL        = "zbot-proxy-url"        // new — optional, Sprint 4 only
+	SecretAnthropicAPIKey  = "ANTHROPIC_API_KEY"    // existing
+	SecretOpenAIAPIKey     = "openai-api-key"        // existing
+	SecretBraveAPIKey      = "brave-search-api-key"  // existing
+	SecretDatabaseURL      = "database-url"          // existing (full postgres URL)
+	SecretTelegramToken    = "zbot-telegram-token"   // new — add after BotFather setup
+	SecretProxyURL         = "zbot-proxy-url"        // new — optional, Sprint 4 only
+	SecretDeepInfraAPIKey  = "deepinfra-api-key"     // Pantheon: DeepSeek V3.2 for cheap cognitive stages
 )
 
 // Ensure GCPSecretManager implements the port.

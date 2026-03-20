@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/zbot-ai/zbot/internal/research"
-	"github.com/zbot-ai/zbot/internal/scheduler"
+	"github.com/ziloss-tech/zbot/internal/research"
+	"github.com/ziloss-tech/zbot/internal/scheduler"
 )
 
 // ─── IN-MEMORY METRICS ─────────────────────────────────────────────────────

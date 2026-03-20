@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zbot-ai/zbot/internal/agent"
-	"github.com/zbot-ai/zbot/internal/prompts"
+	"github.com/ziloss-tech/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/prompts"
 )
 
 // V2ResearchOrchestrator is the two-phase deep research pipeline.

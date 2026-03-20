@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // ParseSchedule converts natural language to a cron expression using Claude.

@@ -3,12 +3,14 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { ChatPane } from './ChatPane'
 import { ThalamusPane } from './ThalamusPane'
 import { WorkflowHistory } from './WorkflowHistory'
+import { FileTreePane } from './FileTreePane'
+import { CodePreviewPane } from './CodePreviewPane'
 import type { WorkflowState } from '../lib/types'
 import type { AgentEvent } from '../hooks/useEventBus'
 
 // ─── Pane Registry ──────────────────────────────────────────────────────────
 
-export type PaneType = 'chat' | 'cortex' | 'thalamus' | 'tasks' | 'history' | 'files'
+export type PaneType = 'chat' | 'cortex' | 'thalamus' | 'tasks' | 'history' | 'files' | 'code_preview'
 
 interface PaneConfig {
   id: string
@@ -23,7 +25,8 @@ const PANE_TEMPLATES: Record<PaneType, Omit<PaneConfig, 'id'>> = {
   thalamus:  { type: 'thalamus',  label: 'Thalamus',  icon: '👁' },
   tasks:     { type: 'tasks',     label: 'Tasks',     icon: '📋' },
   history:   { type: 'history',   label: 'History',   icon: '📜' },
-  files:     { type: 'files',     label: 'Files',     icon: '📁' },
+  files:        { type: 'files',        label: 'Files',   icon: '📁' },
+  code_preview: { type: 'code_preview', label: 'Code',    icon: '📄' },
 }
 
 let paneCounter = 0
@@ -145,20 +148,7 @@ function TaskListPane({ workflowState }: { workflowState: WorkflowState }) {
   )
 }
 
-// ─── Files Pane (Placeholder) ───────────────────────────────────────────────
-
-function FilesPane() {
-  return (
-    <div className="flex h-full flex-col rounded-xl glass-panel">
-      <div className="flex items-center border-b border-white/[0.04] px-4 py-3">
-        <span className="font-display text-sm font-semibold text-white/70">Files</span>
-      </div>
-      <div className="flex-1 flex items-center justify-center">
-        <p className="font-mono text-xs text-white/15">Files touched will appear here</p>
-      </div>
-    </div>
-  )
-}
+// FilesPane placeholder removed — now uses FileTreePane component directly.
 
 // ─── Pane Manager ───────────────────────────────────────────────────────────
 
@@ -182,7 +172,9 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile, eventBus }
     createPane('chat'),
   ])
   const [widths, setWidths] = useState<number[]>([100])
+  const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const fileEventsSeen = useRef(false)
 
   // ─── Auto-split: open Thalamus when Cortex starts working ───────────────
   const prevPhaseRef = useRef(false)
@@ -209,6 +201,24 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile, eventBus }
     prevPhaseRef.current = eventBus?.cortexWorking ?? (workflowState.phase !== 'idle')
   }, [workflowState.phase, eventBus?.cortexWorking, panes])
 
+  // ─── Auto-split: open file tree + code preview on file events ───────────
+  useEffect(() => {
+    if (fileEventsSeen.current) return
+    const events: AgentEvent[] = (eventBus?.events || [])
+    const hasFileEvent = events.some(e => e.type === 'file_read' || e.type === 'file_write')
+    if (!hasFileEvent) return
+
+    const hasFiles = panes.some(p => p.type === 'files')
+    if (hasFiles) return
+
+    fileEventsSeen.current = true
+    setPanes(prev => {
+      const filePane = createPane('files')
+      const newPanes = [filePane, ...prev]
+      setWidths([18, ...prev.map(() => 82 / prev.length)])
+      return newPanes
+    })
+  }, [eventBus?.events, panes])
 
   const addPane = useCallback((type: PaneType) => {
     setPanes((prev) => {
@@ -264,7 +274,9 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile, eventBus }
       case 'history':
         return <WorkflowHistory activeID={workflowState.id} onSelect={() => {}} />
       case 'files':
-        return <FilesPane />
+        return <FileTreePane onClose={() => removePane(pane.id)} onSelectFile={(path) => setPreviewFilePath(path)} />
+      case 'code_preview':
+        return <CodePreviewPane filePath={previewFilePath} onClose={() => removePane(pane.id)} />
       default:
         return null
     }

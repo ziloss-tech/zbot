@@ -15,6 +15,20 @@ import (
 	"strings"
 )
 
+// ─── ROUTER DECISION (Stage 0 output) ───────────────────────────────────────
+
+// RouterDecision is the output of the Router classification stage.
+// It runs BEFORE Frontal Lobe and sets the execution contract for the turn.
+type RouterDecision struct {
+	Classification string   `json:"classification"`  // "direct_answer", "needs_memory", "needs_tools", "needs_plan", "needs_verification"
+	SocraticMode   string   `json:"socratic_mode"`   // "skip", "minimal", "deep"
+	ModelTier      string   `json:"model_tier"`      // "cheap", "standard", "strong"
+	ToolSubset     []string `json:"tool_subset"`     // which tools to expose to Cortex
+	ExecutionMode  string   `json:"execution_mode"`  // "chat", "safe_autopilot", "autopilot"
+	Confidence     float64  `json:"confidence"`      // 0.0-1.0
+	Reasoning      string   `json:"reasoning"`       // one sentence explaining the classification
+}
+
 // ─── TASK PLAN (Frontal Lobe output) ────────────────────────────────────────
 
 // TaskPlan is the output of the Frontal Lobe planning stage.
@@ -115,6 +129,238 @@ func (a *Agent) planTask(ctx context.Context, sessionID string, userMessage stri
 	)
 
 	return plan
+}
+
+// ─── STAGE 0: ROUTER — Classify the message ─────────────────────────────────
+
+// routeMessage runs the Router classification stage.
+// Uses cheapLLM (~$0.0001) to classify the message before Frontal Lobe sees it.
+// Returns nil if cheapLLM is not configured (falls back to Frontal-Lobe-only mode).
+func (a *Agent) routeMessage(ctx context.Context, sessionID string, userMessage string, cheap LLMClient) *RouterDecision {
+	if cheap == nil {
+		return nil
+	}
+
+	// Short-circuit: if the message is obviously simple, skip the LLM call entirely.
+	if IsSimpleMessage(userMessage) {
+		return &RouterDecision{
+			Classification: "direct_answer",
+			SocraticMode:   "skip",
+			ModelTier:      "cheap",
+			ToolSubset:     nil,
+			ExecutionMode:  "chat",
+			Confidence:     0.99,
+			Reasoning:      "simple greeting/acknowledgment — no LLM call needed",
+		}
+	}
+
+	messages := []Message{
+		{Role: RoleSystem, Content: routerSystemPrompt},
+		{Role: RoleUser, Content: userMessage},
+	}
+
+	result, err := cheap.Complete(ctx, messages, nil)
+	if err != nil {
+		a.logger.Warn("router classification failed, skipping", "err", err)
+		return nil
+	}
+
+	decision := &RouterDecision{}
+	content := strings.TrimSpace(result.Content)
+
+	// Find JSON in the response (model might wrap it in markdown).
+	start := strings.Index(content, "{")
+	end := strings.LastIndex(content, "}")
+	if start >= 0 && end > start {
+		content = content[start : end+1]
+	}
+
+	if err := json.Unmarshal([]byte(content), decision); err != nil {
+		a.logger.Warn("router classification parse failed", "err", err, "raw", content[:min(200, len(content))])
+		return nil
+	}
+
+	// Validate and apply defaults.
+	if decision.Classification == "" {
+		decision.Classification = "needs_tools"
+	}
+	if decision.ExecutionMode == "" {
+		decision.ExecutionMode = "chat"
+	}
+	if decision.SocraticMode == "" {
+		decision.SocraticMode = "skip"
+	}
+	if decision.ModelTier == "" {
+		decision.ModelTier = "standard"
+	}
+
+	a.logger.Info("router decision",
+		"classification", decision.Classification,
+		"model_tier", decision.ModelTier,
+		"execution_mode", decision.ExecutionMode,
+		"confidence", decision.Confidence,
+		"tool_subset", decision.ToolSubset,
+		"reasoning", decision.Reasoning,
+	)
+
+	return decision
+}
+
+// routerSystemPrompt is set from the prompts package at init time.
+// Kept as a package-level var to avoid import cycle with prompts package.
+var routerSystemPrompt string
+
+// SetRouterPrompt sets the router system prompt. Called from wire.go.
+func SetRouterPrompt(prompt string) {
+	routerSystemPrompt = prompt
+}
+
+// ─── STALL RECOVERY (Frontal Lobe override) ─────────────────────────────────
+
+// stallPatterns are phrases that indicate Cortex hesitated instead of executing.
+var stallPatterns = []string{
+	"shall i proceed",
+	"would you like me to",
+	"i can write",
+	"let me know if",
+	"should i go ahead",
+	"do you want me to",
+	"i'll need your confirmation",
+	"shall i create",
+	"want me to proceed",
+	"i'd be happy to",
+	"shall i execute",
+	"let me know and i",
+	"if you'd like",
+	"should i create",
+}
+
+// isStalled checks if Cortex asked for permission instead of executing.
+// Conditions: plan says code/task + no tools invoked + reply contains permission patterns.
+func isStalled(reply string, plan *TaskPlan) bool {
+	if plan == nil {
+		return false
+	}
+	// Only recover for task types that clearly need tool execution.
+	if plan.Type != "code" && plan.Type != "analysis" {
+		return false
+	}
+
+	lower := strings.ToLower(reply)
+	for _, pattern := range stallPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+const stallRecoveryPrompt = `The user asked for a specific action and the primary AI hesitated instead of executing.
+
+User's original request: %s
+Frontal Lobe plan type: %s (steps: %s)
+Primary AI's response (stalled): %s
+
+The user clearly wants this executed. Generate the appropriate tool call(s) to fulfill the request.
+Do NOT ask for permission. Do NOT describe what you would do. Execute the tool call directly.`
+
+// recoverFromStall attempts to execute the stalled task using cheapLLM with tools.
+// Returns a revised TurnOutput if recovery succeeds, nil if it doesn't.
+func (a *Agent) recoverFromStall(ctx context.Context, input TurnInput, plan *TaskPlan, stalledReply string, toolDefs []ToolDefinition) *TurnOutput {
+	if a.cheapLLM == nil {
+		return nil
+	}
+
+	a.emit(ctx, input.SessionID, EventStallDetected, "Cortex stalled — attempting recovery", map[string]any{
+		"plan_type": plan.Type,
+		"stalled":   stalledReply[:min(200, len(stalledReply))],
+	})
+	a.logger.Info("stall detected — attempting recovery",
+		"plan_type", plan.Type,
+		"stalled_preview", stalledReply[:min(100, len(stalledReply))],
+	)
+
+	stepsStr := strings.Join(plan.Steps, ", ")
+	prompt := fmt.Sprintf(stallRecoveryPrompt, input.UserMsg.Content, plan.Type, stepsStr, stalledReply)
+
+	messages := []Message{
+		{Role: RoleSystem, Content: prompt},
+		{Role: RoleUser, Content: input.UserMsg.Content},
+	}
+
+	// Use the MAIN LLM (not cheap) with tools enabled — we need tool execution capability.
+	result, err := a.llm.Complete(ctx, messages, toolDefs)
+	if err != nil {
+		a.logger.Warn("stall recovery LLM call failed", "err", err)
+		return nil
+	}
+
+	// If the recovery also didn't produce tool calls, give up.
+	if len(result.ToolCalls) == 0 {
+		a.logger.Info("stall recovery also produced no tool calls — giving up")
+		return nil
+	}
+
+	// Execute the tool calls from recovery.
+	recoveredOutput := &TurnOutput{
+		InputTokens:  result.InputTokens,
+		OutputTokens: result.OutputTokens,
+		TokensUsed:   result.InputTokens + result.OutputTokens,
+	}
+	invokedTools := make(map[string]struct{})
+
+	// Agentic loop for recovery (up to 5 rounds).
+	for round := 0; round < 5; round++ {
+		if len(result.ToolCalls) == 0 {
+			recoveredOutput.Reply = result.Content
+			break
+		}
+
+		// Append assistant message with tool calls first.
+		messages = append(messages, Message{Role: RoleAssistant, Content: result.Content, ToolCalls: result.ToolCalls})
+
+		toolResults, files, toolErr := a.executeTools(ctx, input.SessionID, result.ToolCalls, invokedTools)
+		if toolErr != nil {
+			a.logger.Warn("stall recovery tool execution failed", "err", toolErr)
+			return nil
+		}
+		recoveredOutput.Files = append(recoveredOutput.Files, files...)
+
+		// Append tool results.
+		for _, tr := range toolResults {
+			messages = append(messages, Message{
+				Role:       RoleTool,
+				Content:    tr.Content,
+				ToolCallID: tr.ToolCallID,
+				IsError:    tr.IsError,
+			})
+		}
+
+		// Continue the conversation with tool results.
+		result, err = a.llm.Complete(ctx, messages, toolDefs)
+		if err != nil {
+			a.logger.Warn("stall recovery continuation failed", "err", err)
+			return nil
+		}
+		recoveredOutput.InputTokens += result.InputTokens
+		recoveredOutput.OutputTokens += result.OutputTokens
+		recoveredOutput.TokensUsed += result.InputTokens + result.OutputTokens
+	}
+
+	if recoveredOutput.Reply == "" {
+		recoveredOutput.Reply = result.Content
+	}
+
+	for name := range invokedTools {
+		recoveredOutput.ToolsInvoked = append(recoveredOutput.ToolsInvoked, name)
+	}
+
+	a.emit(ctx, input.SessionID, EventStallRecovered, fmt.Sprintf("Recovery complete — %d tools used", len(invokedTools)), map[string]any{
+		"tools_used": len(invokedTools),
+	})
+	a.logger.Info("stall recovery succeeded", "tools_used", len(invokedTools))
+
+	return recoveredOutput
 }
 
 // ─── STAGE 4: HIPPOCAMPUS — Mid-task memory enrichment ──────────────────────

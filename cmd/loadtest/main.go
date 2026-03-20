@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zbot-ai/zbot/internal/agent"
-	"github.com/zbot-ai/zbot/internal/audit"
-	"github.com/zbot-ai/zbot/internal/memory"
+	"github.com/ziloss-tech/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/audit"
+	"github.com/ziloss-tech/zbot/internal/memory"
 )
 
 const (

@@ -10,14 +10,15 @@ func TestResolveModelTier_ExplicitHints(t *testing.T) {
 		content string
 		want    ModelTier
 	}{
-		{"cheap", "anything", ModelTierHaiku},
+		{"cheap", "anything", ModelTierCheap},
+		{"deepseek", "anything", ModelTierCheap},
 		{"haiku", "anything", ModelTierHaiku},
 		{"smart", "anything", ModelTierSonnet},
 		{"sonnet", "anything", ModelTierSonnet},
 		{"opus", "anything", ModelTierOpus},
 		{"think", "anything", ModelTierOpus},
-		{"CHEAP", "anything", ModelTierHaiku},  // case insensitive
-		{"OPUS", "anything", ModelTierOpus},     // case insensitive
+		{"CHEAP", "anything", ModelTierCheap},    // case insensitive
+		{"OPUS", "anything", ModelTierOpus},      // case insensitive
 	}
 
 	for _, tt := range tests {
@@ -55,8 +56,8 @@ func TestResolveModelTier_SimpleMessages(t *testing.T) {
 
 	for _, msg := range simpleMessages {
 		got := ResolveModelTier("", msg)
-		if got != ModelTierHaiku {
-			t.Errorf("ResolveModelTier('', %q) = %q, want haiku (simple message)", msg, got)
+		if got != ModelTierCheap {
+			t.Errorf("ResolveModelTier('', %q) = %q, want cheap (simple message)", msg, got)
 		}
 	}
 }
@@ -144,6 +145,7 @@ func TestModelTierCost(t *testing.T) {
 		wantInput  float64
 		wantOutput float64
 	}{
+		{ModelTierCheap, 0.00000014, 0.00000028},
 		{ModelTierHaiku, 0.00000025, 0.00000125},
 		{ModelTierSonnet, 0.000003, 0.000015},
 		{ModelTierOpus, 0.000015, 0.000075},

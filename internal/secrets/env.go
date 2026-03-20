@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // envMapping maps GCP secret names to environment variable names.
@@ -33,6 +33,8 @@ var envMapping = map[string]string{
 	"zbot-webhook-secret": "ZBOT_WEBHOOK_SECRET",
 	// Together.
 	"together-api-key": "ZBOT_TOGETHER_API_KEY",
+	// DeepInfra (Pantheon: DeepSeek V3.2 for cheap cognitive stages).
+	"deepinfra-api-key": "ZBOT_DEEPINFRA_API_KEY",
 }
 
 // EnvSecretManager implements agent.SecretsManager using environment variables.

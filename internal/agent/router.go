@@ -44,7 +44,9 @@ func DefaultRouterConfig() RouterConfig {
 func ResolveModelTier(hint string, userContent string) ModelTier {
 	// Priority 1: Explicit hint from caller.
 	switch strings.ToLower(hint) {
-	case "cheap", "haiku":
+	case "cheap", "deepseek":
+		return ModelTierCheap
+	case "haiku":
 		return ModelTierHaiku
 	case "smart", "sonnet":
 		return ModelTierSonnet
@@ -63,9 +65,9 @@ func ResolveModelTier(hint string, userContent string) ModelTier {
 		return ModelTierOpus
 	}
 
-	// Priority 3: Simple messages route to Haiku.
+	// Priority 3: Simple messages route to cheap model (DeepSeek V3.2).
 	if IsSimpleMessage(userContent) {
-		return ModelTierHaiku
+		return ModelTierCheap
 	}
 
 	// Priority 4: Default to Sonnet.
@@ -123,6 +125,8 @@ func IsSimpleMessage(text string) bool {
 // for each model tier. Used for accurate cost tracking.
 func ModelTierCost(tier ModelTier) (inputCostPerToken, outputCostPerToken float64) {
 	switch tier {
+	case ModelTierCheap:
+		return 0.00000014, 0.00000028 // $0.14 / $0.28 per million (DeepSeek V3.2 via DeepInfra)
 	case ModelTierHaiku:
 		return 0.00000025, 0.00000125 // $0.25 / $1.25 per million
 	case ModelTierSonnet:

@@ -20,7 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/zbot-ai/zbot/internal/memory"
+	"github.com/ziloss-tech/zbot/internal/memory"
 )
 
 func main() {

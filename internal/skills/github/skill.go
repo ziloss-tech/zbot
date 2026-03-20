@@ -1,7 +1,7 @@
 package github
 
 import (
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // Skill wraps the GitHub client and tools into a skills.Skill implementation.

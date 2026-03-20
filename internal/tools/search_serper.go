@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/zbot-ai/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // SerperSearchTool searches the web via Serper.dev API (Google results).
