@@ -188,6 +188,8 @@ export interface ChatMessage {
   content: string
   timestamp: number
   modelTier?: ModelTier
+  tokens?: number
+  cost?: number
   toolCalls?: ToolCallEvent[]
   thinking?: string
   isStreaming?: boolean

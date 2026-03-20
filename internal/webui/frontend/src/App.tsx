@@ -26,10 +26,7 @@ export default function App() {
   const metrics = useMetrics()
   const eventBus = useEventBus({ sessionID: 'web-chat' })
 
-  // Sync event bus to window for ChatPane live event strip.
-  useEffect(() => {
-    (window as any).__zbotEvents = eventBus.events
-  }, [eventBus.events])
+  // Event bus passed directly to PaneManager → ChatPane as props (no window globals)
 
   const [activePage, setActivePage] = useState<NavPage>('workflows')
 

@@ -264,9 +264,9 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile, eventBus }
   const renderPaneContent = (pane: PaneConfig) => {
     switch (pane.type) {
       case 'chat':
-        return <ChatPane workflowState={workflowState} />
+        return <ChatPane workflowState={workflowState} eventBus={eventBus} />
       case 'cortex':
-        return <ChatPane workflowState={workflowState} />
+        return <ChatPane workflowState={workflowState} eventBus={eventBus} />
       case 'thalamus':
         return <ThalamusPane workflowState={workflowState} onClose={() => removePane(pane.id)} />
       case 'tasks':

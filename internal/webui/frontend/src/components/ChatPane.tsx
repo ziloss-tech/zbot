@@ -1,13 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { sendChat } from '../lib/api'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { WorkflowState, ChatMessage, ModelTier, ToolCallEvent } from '../lib/types'
 
-// Anthropic logomark
-function ClaudeLogo({ size = 18 }: { size?: number }) {
+// Brain icon for Cortex (replaces Anthropic "A" logo)
+function BrainIcon({ size = 18 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-      <path d="M13.827 3.52h-3.654L5.063 20.48h3.332l1.138-3.192h5.062l1.138 3.192h3.332L13.827 3.52zm-3.645 11.025 1.822-5.117 1.822 5.117h-3.644z"/>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2C9.5 2 7.5 4 7.5 6.5c0 .5.1 1 .2 1.4C6.1 8.5 5 10.1 5 12c0 1.5.6 2.8 1.5 3.8-.3.7-.5 1.4-.5 2.2 0 2.2 1.8 4 4 4 .8 0 1.5-.2 2-.6.5.4 1.2.6 2 .6 2.2 0 4-1.8 4-4 0-.8-.2-1.5-.5-2.2.9-1 1.5-2.3 1.5-3.8 0-1.9-1.1-3.5-2.7-4.1.1-.4.2-.9.2-1.4C16.5 4 14.5 2 12 2z"/>
+      <path d="M12 2v20" opacity="0.3"/>
+      <path d="M8 8.5c1.5 0 2.5 1 4 1s2.5-1 4-1" opacity="0.5"/>
+      <path d="M7.5 13c1.5.5 3 .5 4.5.5s3 0 4.5-.5" opacity="0.5"/>
     </svg>
   )
 }
@@ -47,16 +51,62 @@ function ToolCallChip({ tool }: { tool: ToolCallEvent }) {
   )
 }
 
+// Markdown components with dark theme styling
+const markdownComponents = {
+  p: ({ children }: any) => <p className="mb-2 last:mb-0">{children}</p>,
+  h1: ({ children }: any) => <h1 className="text-sm font-semibold text-white/90 mb-2 mt-3">{children}</h1>,
+  h2: ({ children }: any) => <h2 className="text-xs font-semibold text-white/85 mb-1.5 mt-2.5">{children}</h2>,
+  h3: ({ children }: any) => <h3 className="text-xs font-medium text-white/80 mb-1 mt-2">{children}</h3>,
+  ul: ({ children }: any) => <ul className="list-disc list-inside mb-2 space-y-0.5">{children}</ul>,
+  ol: ({ children }: any) => <ol className="list-decimal list-inside mb-2 space-y-0.5">{children}</ol>,
+  li: ({ children }: any) => <li className="text-white/70">{children}</li>,
+  code: ({ inline, className, children }: any) => {
+    if (inline) {
+      return <code className="rounded bg-white/[0.08] px-1 py-0.5 font-mono text-[10px] text-cyan-300/80">{children}</code>
+    }
+    return (
+      <pre className="rounded-md bg-white/[0.06] border border-white/[0.06] p-3 my-2 overflow-x-auto">
+        <code className="font-mono text-[10px] text-emerald-300/70 leading-relaxed">{children}</code>
+      </pre>
+    )
+  },
+  blockquote: ({ children }: any) => (
+    <blockquote className="border-l-2 border-anthropic/30 pl-3 my-2 text-white/50 italic">{children}</blockquote>
+  ),
+  a: ({ href, children }: any) => (
+    <a href={href} target="_blank" rel="noopener noreferrer" className="text-cyan-400/80 hover:text-cyan-300 underline decoration-cyan-400/30">{children}</a>
+  ),
+  table: ({ children }: any) => (
+    <div className="overflow-x-auto my-2">
+      <table className="w-full border-collapse font-mono text-[10px]">{children}</table>
+    </div>
+  ),
+  th: ({ children }: any) => <th className="border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-left text-white/60">{children}</th>,
+  td: ({ children }: any) => <td className="border border-white/[0.06] px-2 py-1 text-white/50">{children}</td>,
+  strong: ({ children }: any) => <strong className="font-semibold text-white/85">{children}</strong>,
+  em: ({ children }: any) => <em className="italic text-white/60">{children}</em>,
+}
+
+// Event bus types (passed from PaneManager)
+interface EventBusData {
+  events: Array<{type: string, summary: string}>
+  connected: boolean
+  cortexWorking: boolean
+  recentTools: Array<{type: string, summary: string}>
+}
+
 interface ChatPaneProps {
   workflowState: WorkflowState
   className?: string
+  eventBus?: EventBusData
 }
 
-export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
+export function ChatPane({ workflowState, className = '', eventBus }: ChatPaneProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [streamEvents, setStreamEvents] = useState<Array<{type: string, content: string}>>([])
+  const [eventsVisible, setEventsVisible] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -65,8 +115,22 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, workflowState.agentTokens, workflowState.toolCalls])
 
-  // Show streaming agent output as a live message
+  // Fade out event strip 2s after turn completes
+  useEffect(() => {
+    if (eventBus?.cortexWorking) {
+      setEventsVisible(true)
+    } else if (eventsVisible) {
+      const timer = setTimeout(() => setEventsVisible(false), 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [eventBus?.cortexWorking, eventsVisible])
+
   const isStreaming = workflowState.phase === 'executing' && workflowState.agentTokens.length > 0
+
+  const clearConversation = useCallback(() => {
+    setMessages([])
+    setStreamEvents([])
+  }, [])
 
   const send = useCallback(async () => {
     const text = input.trim()
@@ -84,10 +148,8 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
     setLoading(true)
 
     try {
-      // Use streaming endpoint — shows tool calls as they happen,
-      // then delivers the final reply.
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 120000) // 2 min timeout
+      const timeoutId = setTimeout(() => controller.abort(), 120000)
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -102,6 +164,8 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
       const decoder = new TextDecoder()
       let buffer = ''
       let finalReply = ''
+      let tokenCount = 0
+      let costUSD = 0
       clearTimeout(timeoutId)
       setStreamEvents([])
 
@@ -119,6 +183,8 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
             const evt = JSON.parse(line.slice(6))
             if (evt.type === 'done') {
               finalReply = evt.content
+              if (evt.tokens) tokenCount = evt.tokens
+              if (evt.cost) costUSD = evt.cost
             } else if (evt.type === 'error') {
               finalReply = 'Error: ' + evt.content
             } else if (evt.type !== 'turn_complete') {
@@ -136,6 +202,8 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
           content: finalReply,
           timestamp: Date.now(),
           modelTier: workflowState.modelTier,
+          tokens: tokenCount || undefined,
+          cost: costUSD || undefined,
         }
         setMessages((prev) => [...prev, assistantMsg])
       }
@@ -159,36 +227,52 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
     }
   }
 
+  // Use event bus from props (clean) instead of window global (hacky)
+  const busEvents = eventBus?.events || []
+
   return (
     <div className={`flex h-full flex-col rounded-xl glass-panel ${className}`}>
       {/* Header */}
       <div className="flex items-center justify-between border-b border-white/[0.04] px-4 py-3">
         <div className="flex items-center gap-2.5">
-          <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-anthropic/20 text-anthropic">
-            <ClaudeLogo size={14} />
+          <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-400">
+            <BrainIcon size={16} />
           </div>
           <div>
             <div className="flex items-center gap-2">
               <span className="font-display text-sm font-semibold text-white/90">Cortex</span>
               <TierBadge tier={workflowState.modelTier} />
             </div>
-            <p className="font-mono text-[9px] text-white/20 uppercase tracking-widest">Cortex engine</p>
+            <p className="font-mono text-[9px] text-white/20 uppercase tracking-widest">cognitive engine</p>
           </div>
         </div>
 
-        {/* Phase indicator */}
-        {workflowState.phase !== 'idle' && (
-          <div className="flex items-center gap-2">
-            {workflowState.phase === 'executing' && (
-              <motion.div
-                className="h-1.5 w-1.5 rounded-full bg-anthropic"
-                animate={{ opacity: [1, 0.3, 1] }}
-                transition={{ duration: 1.2, repeat: Infinity }}
-              />
-            )}
-            <span className="font-mono text-[10px] text-white/30 capitalize">{workflowState.phase}</span>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {/* Phase indicator */}
+          {workflowState.phase !== 'idle' && (
+            <div className="flex items-center gap-2">
+              {workflowState.phase === 'executing' && (
+                <motion.div
+                  className="h-1.5 w-1.5 rounded-full bg-anthropic"
+                  animate={{ opacity: [1, 0.3, 1] }}
+                  transition={{ duration: 1.2, repeat: Infinity }}
+                />
+              )}
+              <span className="font-mono text-[10px] text-white/30 capitalize">{workflowState.phase}</span>
+            </div>
+          )}
+
+          {/* Clear conversation button */}
+          {messages.length > 0 && (
+            <button
+              onClick={clearConversation}
+              className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-1 font-mono text-[9px] text-white/30 hover:text-white/60 hover:border-white/[0.12] transition-colors"
+              title="Clear conversation"
+            >
+              Clear
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Thinking indicator */}
@@ -216,18 +300,19 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
         )}
       </AnimatePresence>
 
-      {/* Live event bus strip — shows real-time Cortex activity */}
+      {/* Live event bus strip — uses eventBus prop, fades after turn completes */}
       <AnimatePresence>
-        {(window as any).__zbotEvents?.length > 0 && (
+        {eventsVisible && busEvents.length > 0 && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.3 }}
             className="overflow-hidden border-b border-cyan-500/20 bg-cyan-500/[0.03]"
           >
             <div className="flex items-center gap-2 px-4 py-2 overflow-x-auto">
               <span className="font-mono text-[9px] text-cyan-400/40 uppercase tracking-widest shrink-0">cortex</span>
-              {((window as any).__zbotEvents || []).slice(-3).map((evt: any, i: number) => (
+              {busEvents.slice(-3).map((evt: any, i: number) => (
                 <div key={i} className="flex items-center gap-1.5 rounded-md border border-cyan-500/15 bg-cyan-500/[0.04] px-2 py-1">
                   <span className={`font-mono text-[10px] ${
                     evt.type === 'plan_start' || evt.type === 'plan_complete' ? 'text-violet-400' :
@@ -278,15 +363,15 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && !isStreaming && (
           <div className="flex h-full flex-col items-center justify-center text-center py-8">
-            <ClaudeLogo size={32} />
+            <BrainIcon size={32} />
             <p className="mt-4 font-mono text-xs text-white/20">
               Cortex ready. Ask anything or give a task.
             </p>
             <div className="mt-4 space-y-1.5">
               {[
-                'Deploy the staging branch',
+                'Audit workflows in Esler CST',
                 'Research competitors and write a report',
-                'Refactor the auth module',
+                'How many contacts are DND?',
               ].map((q) => (
                 <button
                   key={q}
@@ -311,11 +396,20 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
                 : 'border-white/[0.04] bg-white/[0.02] mr-4'
             }`}
           >
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="font-mono text-[9px] uppercase tracking-wider text-white/30">
-                {msg.role === 'user' ? 'You' : 'Cortex'}
-              </span>
-              {msg.modelTier && <TierBadge tier={msg.modelTier} />}
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[9px] uppercase tracking-wider text-white/30">
+                  {msg.role === 'user' ? 'You' : 'Cortex'}
+                </span>
+                {msg.modelTier && <TierBadge tier={msg.modelTier} />}
+              </div>
+              {/* Token/cost display per message */}
+              {msg.tokens && (
+                <span className="font-mono text-[9px] text-white/15">
+                  {msg.tokens.toLocaleString()} tok
+                  {msg.cost ? ` · $${msg.cost.toFixed(4)}` : ''}
+                </span>
+              )}
             </div>
             {msg.toolCalls && msg.toolCalls.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-2">
@@ -324,9 +418,18 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
                 ))}
               </div>
             )}
-            <div className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-white/70">
-              {msg.content}
-            </div>
+            {/* Render markdown for assistant messages, plain text for user */}
+            {msg.role === 'assistant' ? (
+              <div className="prose-zbot font-mono text-[11px] leading-relaxed text-white/70">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  {msg.content}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <div className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-white/70">
+                {msg.content}
+              </div>
+            )}
           </motion.div>
         ))}
 
@@ -338,18 +441,20 @@ export function ChatPane({ workflowState, className = '' }: ChatPaneProps) {
             className="rounded-lg border border-anthropic/20 bg-anthropic/[0.04] p-3 mr-4"
           >
             <div className="flex items-center gap-2 mb-1.5">
-              <span className="font-mono text-[9px] uppercase tracking-wider text-white/30">Claude</span>
+              <span className="font-mono text-[9px] uppercase tracking-wider text-white/30">Cortex</span>
               <TierBadge tier={workflowState.modelTier} />
             </div>
-            <div className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-white/70">
-              {workflowState.agentTokens}
+            <div className="prose-zbot font-mono text-[11px] leading-relaxed text-white/70">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {workflowState.agentTokens}
+              </ReactMarkdown>
               <span className="inline-block h-3 w-0.5 bg-anthropic cursor-blink ml-0.5 align-text-bottom" />
             </div>
           </motion.div>
         )}
 
-        {/* Live activity indicator during streaming */}
-        {loading && (
+        {/* Live activity indicator during loading */}
+        {loading && !isStreaming && (
           <motion.div
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
