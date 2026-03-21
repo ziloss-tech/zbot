@@ -32,6 +32,7 @@ import (
 	skillMemory "github.com/ziloss-tech/zbot/internal/skills/memory"
 	skillSearch "github.com/ziloss-tech/zbot/internal/skills/search"
 	skillSheets "github.com/ziloss-tech/zbot/internal/skills/sheets"
+	"github.com/ziloss-tech/zbot/internal/skills/mcpbridge"
 	"github.com/ziloss-tech/zbot/internal/research"
 	"github.com/ziloss-tech/zbot/internal/vault"
 	"github.com/ziloss-tech/zbot/internal/security"
@@ -433,6 +434,25 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		logger.Info("skill registered: email")
 	} else {
 		logger.Warn("Email skill skipped — SMTP secrets not available")
+	}
+
+
+	// ── MCP Bridge (dynamic MCP server loading) ─────────────────────────────
+	// Load external MCP servers as ZBOT skills. Config via:
+	//   - ZBOT_MCP_SERVERS env var (JSON array)
+	//   - workspace/mcp-servers.json config file
+	mcpConfigPath := filepath.Join(workspaceRoot, "mcp-servers.json")
+	mcpSkills, mcpErr := mcpbridge.LoadFromConfig(ctx, skillRegistry, mcpConfigPath, logger)
+	if mcpErr != nil {
+		logger.Warn("MCP bridge loading failed", "err", mcpErr)
+	} else if len(mcpSkills) > 0 {
+		logger.Info("MCP bridge loaded", "servers", len(mcpSkills))
+		// Ensure MCP servers are shut down on exit.
+		defer func() {
+			for _, s := range mcpSkills {
+				s.Close()
+			}
+		}()
 	}
 
 	// Merge core tools + skill tools.
