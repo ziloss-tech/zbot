@@ -33,6 +33,7 @@ import (
 	skillSearch "github.com/ziloss-tech/zbot/internal/skills/search"
 	skillSheets "github.com/ziloss-tech/zbot/internal/skills/sheets"
 	"github.com/ziloss-tech/zbot/internal/research"
+	"github.com/ziloss-tech/zbot/internal/vault"
 	"github.com/ziloss-tech/zbot/internal/security"
 	"github.com/ziloss-tech/zbot/internal/tools"
 	"github.com/ziloss-tech/zbot/internal/webui"
@@ -359,6 +360,40 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// Search skill.
 	skillRegistry.Register(skillSearch.NewSkill())
 	logger.Info("skill registered: search")
+
+	// ── Vault (encrypted secrets store) ──────────────────────────────────────
+	var zbotVault *vault.Vault
+	vaultMasterKey := os.Getenv("ZBOT_VAULT_MASTER_KEY")
+	if vaultMasterKey == "" {
+		// Try GCP Secret Manager.
+		vaultMasterKey, _ = sm.Get(ctx, "zbot-vault-master-key")
+	}
+	if vaultMasterKey == "" {
+		// Generate a random key for first-time setup.
+		newKey := make([]byte, 32)
+		rand.Read(newKey)
+		vaultMasterKey = hex.EncodeToString(newKey)
+		logger.Warn("ZBOT_VAULT_MASTER_KEY not set — generated ephemeral key (secrets won't survive restart!)",
+			"hint", "set ZBOT_VAULT_MASTER_KEY to a 64-char hex string for persistence")
+	}
+	vaultKeyBytes, vkErr := hex.DecodeString(vaultMasterKey)
+	if vkErr != nil || len(vaultKeyBytes) != 32 {
+		logger.Warn("vault master key invalid — must be 64 hex chars (32 bytes)", "err", vkErr)
+	} else {
+		if pgDB != nil {
+			vaultStore, vsErr := vault.NewPostgresStore(pgDB.Config().ConnConfig.ConnString())
+			if vsErr != nil {
+				logger.Warn("vault postgres store failed", "err", vsErr)
+			} else {
+				zbotVault, _ = vault.New(vaultKeyBytes, vaultStore)
+				skillRegistry.Register(vault.NewSkill(zbotVault, "default"))
+				logger.Info("skill registered: vault (AES-256-GCM, Postgres)")
+			}
+		} else {
+			logger.Warn("vault disabled — requires Postgres")
+		}
+	}
+
 
 	if ghlKey, ghlErr := sm.Get(ctx, "ghl-api-token"); ghlErr == nil && ghlKey != "" {
 		skillRegistry.Register(skillGHL.NewSkill(ghlKey, cfg.GHLLocationID))
@@ -973,6 +1008,14 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 
 	// v2: Wire agentic quick chat — uses full agent.Run() with tool use + event bus.
 	// Works with or without Postgres (memory degrades gracefully).
+
+	// Vault REST API.
+	if zbotVault != nil {
+		vaultHandler := vault.NewHandler(zbotVault, "default")
+		webServer.RegisterVaultHandler(vaultHandler)
+		logger.Info("vault REST API mounted at /api/vault/")
+	}
+
 	webServer.SetEventBus(eventBus)
 	webServer.StartMetricsCollector(ctx)
 	webServer.SetLLMClient(llmClient)
