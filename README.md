@@ -10,7 +10,7 @@
 
 Your AI agent, your hardware, your data. Run any model — Llama, Mistral, Qwen, DeepSeek, Claude, GPT — through a single interface with persistent memory, tool use, deep research, and a web UI.
 
-![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go) ![License](https://img.shields.io/badge/license-Apache_2.0-blue) ![Docker](https://img.shields.io/badge/docker-ready-blue?logo=docker) ![Claude](https://img.shields.io/badge/Claude-Sonnet_4.6-blueviolet?logo=anthropic)
+![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go) ![License](https://img.shields.io/badge/license-Apache_2.0-blue) ![Docker](https://img.shields.io/badge/docker-ready-blue?logo=docker) ![Tools](https://img.shields.io/badge/tools-63_built--in-green)
 
 ## Why ZBOT?
 
@@ -68,14 +68,26 @@ ZBOT maps its components to brain regions — not as metaphor, but as an archite
 
 **Cost-optimized stacks:**
 - **Frontier**: Claude Sonnet 4.6 + Brave Search → ~$0.07/query
-- **Budget**: Grok 4.1 Fast + Serper → ~$0.004/query (18x cheaper)
+- **Budget**: DeepSeek V3.2 + Serper → ~$0.004/query (18x cheaper)
 - **Local**: Ollama + Serper → ~$0.0003/query (effectively free)
 
 *Pro athlete performance for pickup game prices.*
 
 ## Quick Start
 
-### Option 1: Ollama (fully local, free)
+### Option 1: Docker Compose (recommended)
+
+```bash
+git clone https://github.com/ziloss-tech/zbot.git && cd zbot
+cp .env.example .env
+# Edit .env — add at minimum an LLM API key (Anthropic, Ollama, etc.)
+docker compose up -d
+# Open http://localhost:18790
+```
+
+Includes Postgres with pgvector for persistent memory, workflows, and research.
+
+### Option 2: Ollama (fully local, free)
 
 ```bash
 # 1. Install Ollama and pull a model
@@ -90,16 +102,6 @@ go run ./cmd/zbot
 ```
 
 Open **http://localhost:18790** — you're chatting with a local AI agent.
-
-### Option 2: Docker
-
-```bash
-docker run -p 18790:18790 \
-  -e ZBOT_LLM_BASE_URL=http://host.docker.internal:11434/v1 \
-  -e ZBOT_LLM_MODEL=llama3.1:8b \
-  -e ZBOT_LLM_API_KEY=ollama \
-  ghcr.io/ziloss-tech/zbot:latest
-```
 
 ### Option 3: Claude (Anthropic)
 
@@ -129,25 +131,49 @@ Any OpenAI-compatible API works. Tested configurations:
 
 ## Features
 
-### Tools
-ZBOT doesn't just chat — it acts. Built-in tools:
+### 63 Built-in Tools Across 10 Skills
 
-- **web_search** — Brave Search API for real-time web results
-- **fetch_url** — scrape and read any URL with caching, rate limiting, and proxy rotation
-- **credentialed_fetch** — fetch authenticated content with domain-matched credential injection
-- **manage_credentials** — add, remove, and list stored site credentials via the agent
-- **read_file / write_file** — workspace file management
-- **run_code** — execute Python, JavaScript, Go, or bash in a sandbox
-- **save_memory / search_memory** — persistent semantic memory with diversity re-ranking
-- **analyze_image** — vision/multimodal analysis
-- **pdf_extract** — extract text from PDF attachments
+| Skill | Tools | What It Does |
+|-------|-------|--------------|
+| **Core** | 12 | Web search, URL fetch, file I/O, code runner, image analysis, PDF extract |
+| **GHL** | 20 | GoHighLevel CRM — multi-location, workflow auditor, contact management |
+| **GitHub** | 13 | Repos, issues, PRs, code search, commits, branches, file access |
+| **Vault** | 4 | AES-256-GCM encrypted secrets store with per-user HKDF key derivation |
+| **Sheets** | 4 | Google Sheets read, write, append, list |
+| **Search** | 2 | Serper + Brave web search |
+| **Memory** | 2 | Semantic save + search via pgvector |
+| **Parallel Code** | 2 | Farm coding tasks to local Qwen Coder 32B via Ollama |
+| **Factory** | 2 | Autonomous software planning pipeline (interview → PRD → architecture → security) |
+| **Email** | 1 | SMTP send |
+| **MCP Bridge** | ∞ | Plug in any MCP server — auto-discovers tools at startup, zero code |
+
+### Encrypted Vault
+Built-in secrets management with AES-256-GCM encryption, HKDF per-user key derivation, and Postgres storage. No need for Infisical, Doppler, or any external secrets manager. Store API keys, tokens, and credentials — all encrypted at rest.
+
+### MCP Bridge (Zapier Replacement)
+Drop a JSON config file and any MCP-compatible server becomes a ZBOT skill:
+
+```json
+// ~/zbot-workspace/mcp-servers.json
+[{"name": "stripe", "command": "npx", "args": ["-y", "@stripe/agent-toolkit"],
+  "env": {"STRIPE_SECRET_KEY": "vault:STRIPE_SECRET_KEY"}}]
+```
+
+### Software Factory
+Autonomous planning pipeline that turns a vague idea into a complete project plan:
+Interviewer → PRD Writer → Architect → Security Reviewer → Critic → Task Manifest.
+Each phase uses specialist AI agents. Cost: ~$0.15 per complete project plan.
+
+### Parallel Coding Dispatcher
+Architecture decisions by Sonnet/Opus, implementation by local Qwen Coder 32B.
+Proven: 3/3 tasks completed on first attempt, 52 seconds total, zero cost.
 
 ### Skills System
 Modular skill architecture for domain-specific capabilities:
 - **Memory** — save and search long-term facts
 - **Search** — web search orchestration
-- **GHL** — GoHighLevel CRM integration
-- **GitHub** — repository and issue management
+- **GHL** — GoHighLevel CRM integration (20 tools, multi-location)
+- **GitHub** — repository and issue management (13 tools)
 - **Google Sheets** — spreadsheet read/write
 - **Email** — SMTP email sending
 

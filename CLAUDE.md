@@ -115,8 +115,10 @@ ZBOT auto-discovers tools via MCP protocol at startup.
 - Vault tests use `memStore` (see vault_test.go for pattern).
 
 ### Git
-- Branch: `public-release` → pushes to `ziloss-tech/zbot` (public)
-- Branch: `main` → private repo `jeremylerwick-max/zbot`
+- Active branch: `public-release` (local working branch)
+- Remotes: `public` → ziloss-tech/zbot, `origin` → jeremylerwick-max/zbot
+- Push to both: `git push public public-release:main && git push origin public-release:main`
+- `main` branch is kept in sync with `public-release`
 - Commit messages: `feat:`, `fix:`, `docs:`, `chore:` prefixes
 - Never commit secrets, API keys, or personal data. Run `git diff --cached`
   before committing if unsure.
@@ -129,7 +131,7 @@ ZBOT auto-discovers tools via MCP protocol at startup.
 
 ## Current State (March 2026)
 
-- 54 built-in tools across 7 skills + unlimited via MCP bridge
+- 63 built-in tools across 10 skills + unlimited via MCP bridge
 - Cognitive engine: 5-stage brain loop (plan → memory → execute → memory → verify)
 - Thalamus catches hallucinations before user sees them (~$0.002/turn)
 - Deep research pipeline: 5 models collaborating

@@ -89,7 +89,7 @@ Total user cost: API keys (~$20-50/mo) + Postgres (~$7/mo).
 
 ### Core (Shipped)
 - Single-brain cognitive engine (plan → memory → execute → verify)
-- 54 built-in tools across 7 skill categories
+- 63 built-in tools across 10 skill categories
 - MCP bridge for zero-code integration with any MCP server
 - Encrypted secrets vault (AES-256-GCM, per-user keys)
 - Web UI with SSE streaming and markdown rendering

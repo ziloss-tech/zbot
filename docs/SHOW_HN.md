@@ -1,4 +1,4 @@
-# Show HN: ZBOT – Self-hosted AI agent with 56 tools, encrypted vault, $0.02/query
+# Show HN: ZBOT – Self-hosted AI agent with 63 tools, encrypted vault, $0.02/query
 
 I built an open-source AI agent that replaces Zapier + secrets manager + AI chatbot with a single Go binary. You bring your own API keys; ZBOT provides the orchestration.
 
@@ -6,7 +6,7 @@ I built an open-source AI agent that replaces Zapier + secrets manager + AI chat
 
 **What it does:**
 
-56 built-in tools across 8 skills (CRM, GitHub, encrypted vault, web search, Google Sheets, email, memory, code execution) plus unlimited tool expansion via MCP bridge (plug in any MCP server, zero code).
+63 built-in tools across 10 skills (CRM, GitHub, encrypted vault, web search, Google Sheets, email, memory, code execution, parallel coding, software factory) plus unlimited tool expansion via MCP bridge (plug in any MCP server, zero code).
 
 Every message runs through a 5-stage cognitive loop: plan → load memory → execute with tools → enrich memory → verify. The verification stage (Thalamus) uses a $0.001 Haiku call to catch hallucinations before you see them. In testing, it caught fabricated statistics, invented API features, and fake benchmark numbers — the user only ever sees the corrected version.
 
