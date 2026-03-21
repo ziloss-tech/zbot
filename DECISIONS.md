@@ -5,24 +5,29 @@ Most recent first. For major architectural decisions, see `docs/adr/`.
 
 ---
 
-## 2026-03-20 — MCP Bridge: Dynamic MCP Server Loading
+## 2026-03-20 — Parallel Coding: Opus Architects, Qwen Implements
 
-**Context:** ZBOT had 7 hand-coded skills. The MCP registry has 4+ pages
-of open-source connectors (Stripe, Notion, Playwright, etc). Each hand-coded
-skill takes days to write.
+**Context:** Writing code with frontier models costs $3-15/M output tokens.
+Most coding tasks don't need frontier reasoning — they need a bounded task,
+clear interfaces, and test verification. Claudius Maximus has 512GB RAM
+and Qwen Coder 32B running locally on Ollama at zero cost.
 
-**Decision:** Build an MCP-to-Skill bridge that auto-discovers tools from
-any MCP server via JSON-RPC 2.0 over stdio. Users add a JSON config, ZBOT
-wraps the tools as native skills at startup. Zero code per integration.
+**Decision:** Build a parallel task dispatcher. Sonnet/Opus produces a
+TaskManifest (architecture + interfaces + tests + bounded tasks). The
+dispatcher farms individual files to Qwen Coder via Ollama. Tests verify
+correctness. Retries with error feedback on failure.
 
-**Trade-off:** Stdio MCP is synchronous and spawns a child process per server.
-Fine for 5-10 servers, might need connection pooling at 50+. Cross that
-bridge when someone actually runs 50 MCP servers.
+**Live test result:** 3/3 tasks, all first attempt, 52 seconds total.
+Qwen produced a concurrent health checker, HTTP handler, and built-in
+checks (Postgres, Ollama, disk) — all compilable Go. Zero cost.
 
-**Credits:** Thanks to Anthropic for the MCP spec and to all open-source
-MCP server maintainers whose work makes this plug-and-play.
+**Trade-off:** Qwen can't make architectural decisions or handle cross-module
+integration. That's the orchestrator's job. If Qwen fails a test 3 times,
+the task goes back to Sonnet for correction (~$0.02).
 
 ---
+
+
 
 ## 2026-03-20 — Vault: Own It vs. Use Infisical
 
