@@ -33,6 +33,7 @@ import (
 	skillSearch "github.com/ziloss-tech/zbot/internal/skills/search"
 	skillSheets "github.com/ziloss-tech/zbot/internal/skills/sheets"
 	"github.com/ziloss-tech/zbot/internal/skills/mcpbridge"
+	"github.com/ziloss-tech/zbot/internal/parallel"
 	"github.com/ziloss-tech/zbot/internal/research"
 	"github.com/ziloss-tech/zbot/internal/vault"
 	"github.com/ziloss-tech/zbot/internal/security"
@@ -454,6 +455,22 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			}
 		}()
 	}
+
+
+	// ── Parallel Coding Dispatcher (Qwen Coder via Ollama) ──────────────────
+	ollamaURL := os.Getenv("ZBOT_OLLAMA_URL")
+	if ollamaURL == "" {
+		ollamaURL = "http://localhost:11434/v1"
+	}
+	ollamaModel := os.Getenv("ZBOT_CODER_MODEL")
+	if ollamaModel == "" {
+		ollamaModel = "qwen2.5-coder:32b"
+	}
+	// Only register if Ollama is reachable.
+	ollamaClient := llm.NewOpenAICompatClient(ollamaURL, "ollama", ollamaModel, logger)
+	parallelDispatcher := parallel.NewDispatcher(ollamaClient, 4, logger)
+	skillRegistry.Register(parallel.NewSkill(parallelDispatcher))
+	logger.Info("skill registered: parallel_code", "model", ollamaModel, "url", ollamaURL)
 
 	// Merge core tools + skill tools.
 	allTools := append(coreTools, skillRegistry.AllTools()...)
