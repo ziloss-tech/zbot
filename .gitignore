@@ -40,8 +40,14 @@ logs/
 tmp/
 .tmp/
 
-# Binaries
+# Binaries (compiled)
 /zbot-bin
 /memcli
 /zbot-v2
 zbot-v2
+
+# Personal/private — never commit
+/PROJECT_KNOWLEDGE.md
+/COWORK_PROMPT.md
+/WORKER_TASKS.md
+/MASTER_PROJECT_INFO.md
