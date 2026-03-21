@@ -1,0 +1,75 @@
+# ZBOT Docker Compose — one-liner setup
+# Usage: docker compose up -d
+#
+# Before running, copy .env.example to .env and fill in your API keys:
+#   cp .env.example .env
+#   # Edit .env with your keys
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zbot
+      POSTGRES_PASSWORD: ${ZBOT_DB_PASSWORD:-changeme}
+      POSTGRES_DB: zbot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  zbot:
+    image: ziloss/zbot:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "18790:18790"
+    environment:
+      # ── Required: at least one LLM backend ──────────────────────────
+      # Option A: Anthropic Claude (recommended)
+      ZBOT_ANTHROPIC_API_KEY: ${ZBOT_ANTHROPIC_API_KEY:-}
+      # Option B: Any OpenAI-compatible model (Ollama, Together, Groq)
+      ZBOT_LLM_BASE_URL: ${ZBOT_LLM_BASE_URL:-}
+      ZBOT_LLM_MODEL: ${ZBOT_LLM_MODEL:-}
+      ZBOT_LLM_API_KEY: ${ZBOT_LLM_API_KEY:-}
+
+      # ── Database ────────────────────────────────────────────────────
+      ZBOT_DB_HOST: postgres
+      ZBOT_DB_USER: zbot
+      ZBOT_DB_PASSWORD: ${ZBOT_DB_PASSWORD:-changeme}
+      ZBOT_DB_NAME: zbot
+
+      # ── Vault (encrypted secrets store) ─────────────────────────────
+      # Generate with: openssl rand -hex 32
+      ZBOT_VAULT_MASTER_KEY: ${ZBOT_VAULT_MASTER_KEY:-}
+
+      # ── Search (optional — pick one) ────────────────────────────────
+      ZBOT_SERPER_API_KEY: ${ZBOT_SERPER_API_KEY:-}
+      ZBOT_BRAVE_API_KEY: ${ZBOT_BRAVE_API_KEY:-}
+
+      # ── Slack (optional) ────────────────────────────────────────────
+      ZBOT_SLACK_TOKEN: ${ZBOT_SLACK_TOKEN:-}
+      ZBOT_SLACK_APP_TOKEN: ${ZBOT_SLACK_APP_TOKEN:-}
+
+      # ── DeepSeek V3.2 for cheap cognitive stages (optional) ─────────
+      ZBOT_DEEPINFRA_API_KEY: ${ZBOT_DEEPINFRA_API_KEY:-}
+
+      # ── Local models via Ollama (optional) ──────────────────────────
+      # Point to host Ollama if running locally:
+      # ZBOT_OLLAMA_URL: http://host.docker.internal:11434/v1
+    volumes:
+      - workspace:/app/workspace
+
+volumes:
+  pgdata:
+  workspace:

@@ -33,6 +33,7 @@ import (
 	skillSearch "github.com/ziloss-tech/zbot/internal/skills/search"
 	skillSheets "github.com/ziloss-tech/zbot/internal/skills/sheets"
 	"github.com/ziloss-tech/zbot/internal/skills/mcpbridge"
+	"github.com/ziloss-tech/zbot/internal/factory"
 	"github.com/ziloss-tech/zbot/internal/parallel"
 	"github.com/ziloss-tech/zbot/internal/healthcheck"
 	"github.com/ziloss-tech/zbot/internal/research"
@@ -472,6 +473,13 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	parallelDispatcher := parallel.NewDispatcher(ollamaClient, 4, logger)
 	skillRegistry.Register(parallel.NewSkill(parallelDispatcher))
 	logger.Info("skill registered: parallel_code", "model", ollamaModel, "url", ollamaURL)
+
+	// ── Software Factory (autonomous planning pipeline) ─────────────────────
+	// Uses cheap model for interview + PRD, smart model (Sonnet) for
+	// architecture + security + critic. Always available — no secrets required.
+	factoryPipeline := factory.NewPipelineV2(cheapModelClient, llmClient, logger)
+	skillRegistry.Register(factory.NewSkill(factoryPipeline))
+	logger.Info("skill registered: factory")
 
 	// Merge core tools + skill tools.
 	allTools := append(coreTools, skillRegistry.AllTools()...)
