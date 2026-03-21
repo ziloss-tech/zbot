@@ -34,6 +34,7 @@ import (
 	skillSheets "github.com/ziloss-tech/zbot/internal/skills/sheets"
 	"github.com/ziloss-tech/zbot/internal/skills/mcpbridge"
 	"github.com/ziloss-tech/zbot/internal/parallel"
+	"github.com/ziloss-tech/zbot/internal/healthcheck"
 	"github.com/ziloss-tech/zbot/internal/research"
 	"github.com/ziloss-tech/zbot/internal/vault"
 	"github.com/ziloss-tech/zbot/internal/security"
@@ -1157,6 +1158,17 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	} else {
 		logger.Warn("web UI started in degraded mode — no Postgres connection")
 	}
+
+
+	// ── Health Check (produced by Qwen Coder via parallel dispatch) ──────────
+	hc := healthcheck.NewHealthChecker()
+	hc.Register("ollama", healthcheck.OllamaCheck("http://localhost:11434"))
+	hc.Register("disk", healthcheck.DiskCheck(workspaceRoot, 10.0))
+	if pgDB != nil {
+		hc.Register("postgres", healthcheck.PostgresCheck(pgDB.Config().ConnConfig.ConnString()))
+	}
+	webServer.Mux().HandleFunc("/health", healthcheck.Handler(hc))
+	logger.Info("healthcheck endpoint ready", "path", "/health")
 
 	// ── Slack Gateway (optional — skip if no tokens) ────────────────────────
 	if botToken != "" && appToken != "" {
