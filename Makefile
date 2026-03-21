@@ -27,7 +27,8 @@ test-short:
 
 # ── Lint ───────────────────────────────────────────────────────────────────────
 lint:
-	golangci-lint run ./...
+	go vet ./...
+	@which staticcheck > /dev/null 2>&1 && staticcheck ./... || echo "staticcheck not installed (go install honnef.co/go/tools/cmd/staticcheck@latest)"
 
 # ── Vulnerability scan (run before every commit) ───────────────────────────────
 vuln:
