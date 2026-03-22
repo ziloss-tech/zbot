@@ -16,10 +16,19 @@ import (
 // Skill wraps the Software Factory pipeline as a ZBOT skill.
 type Skill struct {
 	pipeline *PipelineV2
+	store    SessionStore // optional — nil means in-memory only
 
 	// Active planning sessions (in-memory, keyed by plan ID).
 	mu       sync.Mutex
 	sessions map[string]*PlanStateV2
+}
+
+// SessionStore is the interface for persisting factory sessions.
+type SessionStore interface {
+	Save(ctx context.Context, state *PlanStateV2) error
+	Load(ctx context.Context, id string) (*PlanStateV2, error)
+	LoadIncomplete(ctx context.Context) ([]*PlanStateV2, error)
+	Delete(ctx context.Context, id string) error
 }
 
 // NewSkill creates a factory skill that orchestrates the planning pipeline.
@@ -28,6 +37,30 @@ func NewSkill(pipeline *PipelineV2) *Skill {
 		pipeline: pipeline,
 		sessions: make(map[string]*PlanStateV2),
 	}
+}
+
+// SetStore sets a persistence store for factory sessions.
+// If set, sessions survive ZBOT restarts.
+func (s *Skill) SetStore(store SessionStore) {
+	s.store = store
+}
+
+// RestoreSessions loads incomplete sessions from the store into memory.
+// Call this at startup after SetStore.
+func (s *Skill) RestoreSessions(ctx context.Context) error {
+	if s.store == nil {
+		return nil
+	}
+	sessions, err := s.store.LoadIncomplete(ctx)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, state := range sessions {
+		s.sessions[state.ID] = state
+	}
+	return nil
 }
 
 func (s *Skill) Name() string        { return "factory" }
@@ -59,13 +92,28 @@ Workflow:
 func (s *Skill) getSession(id string) *PlanStateV2 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sessions[id]
+	if state, ok := s.sessions[id]; ok {
+		return state
+	}
+	// Try loading from persistent store.
+	if s.store != nil {
+		state, err := s.store.Load(context.Background(), id)
+		if err == nil && state != nil {
+			s.sessions[id] = state
+			return state
+		}
+	}
+	return nil
 }
 
 func (s *Skill) setSession(id string, state *PlanStateV2) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[id] = state
+	// Persist to store if available. Best-effort — don't fail the tool call.
+	if s.store != nil {
+		_ = s.store.Save(context.Background(), state)
+	}
 }
 
 // ─── FACTORY_PLAN TOOL ──────────────────────────────────────────────────────
