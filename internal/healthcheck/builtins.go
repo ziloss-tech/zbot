@@ -13,7 +13,7 @@ import (
 // PostgresCheck creates a CheckFunc that pings a Postgres database.
 func PostgresCheck(connStr string) CheckFunc {
 	return func() Check {
-		db, err := sql.Open("postgres", connStr)
+		db, err := sql.Open("pgx", connStr)
 		if err != nil {
 			return Check{
 				Name:   "postgres",
