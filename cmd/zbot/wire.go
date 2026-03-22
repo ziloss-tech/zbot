@@ -476,7 +476,21 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// Uses cheap model for interview + PRD, smart model (Sonnet) for
 	// architecture + security + critic. Always available — no secrets required.
 	factoryPipeline := factory.NewPipelineV2(cheapModelClient, llmClient, logger)
-	skillRegistry.Register(factory.NewSkill(factoryPipeline))
+	factorySkill := factory.NewSkill(factoryPipeline)
+	if pgDB != nil {
+		factoryStore, fsErr := factory.NewPGSessionStore(ctx, pgDB)
+		if fsErr != nil {
+			logger.Warn("factory session store failed", "err", fsErr)
+		} else {
+			factorySkill.SetStore(factoryStore)
+			if restoreErr := factorySkill.RestoreSessions(ctx); restoreErr != nil {
+				logger.Warn("factory session restore failed", "err", restoreErr)
+			} else {
+				logger.Info("factory session persistence ready")
+			}
+		}
+	}
+	skillRegistry.Register(factorySkill)
 	logger.Info("skill registered: factory")
 
 	// Merge core tools + skill tools.
