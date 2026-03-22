@@ -68,9 +68,9 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       label: 'Active Schedules',
       value: activeSchedules || '—',
       sub: `${schedules.length} total`,
-      color: 'text-observer',
-      dot: 'bg-observer',
-      bar: { pct: activeSchedules > 0 ? Math.min((activeSchedules / Math.max(schedules.length, 1)) * 100, 100) : 0, color: 'bg-observer' },
+      color: 'text-auditor',
+      dot: 'bg-auditor',
+      bar: { pct: activeSchedules > 0 ? Math.min((activeSchedules / Math.max(schedules.length, 1)) * 100, 100) : 0, color: 'bg-auditor' },
     },
   ]
 

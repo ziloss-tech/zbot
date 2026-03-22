@@ -89,7 +89,7 @@ function VerificationCard({ result }: { result: VerificationResult }) {
       <div className="flex items-center gap-2 mb-1.5">
         <span className={`font-mono text-[9px] uppercase tracking-wider ${
           isApproved ? 'text-emerald-400/60' : 'text-amber-400/60'
-        }`}>Thalamus verification</span>
+        }`}>Auditor verification</span>
       </div>
       <div className={`font-mono text-[11px] ${isApproved ? 'text-emerald-300' : 'text-amber-300'}`}>
         {isApproved ? `Verified ✓` : 'Revision needed'} (confidence: {result.confidence}%)
@@ -230,7 +230,7 @@ export function ThalamusPane({ workflowState, className = '', onClose }: Thalamu
       // Build event context from real bus events
       const eventSummary = busEvents.slice(-10).map(e => `[${e.type}] ${e.summary}`).join('\n')
       const cortexOutput = workflowState.agentTokens.slice(-500)
-      const thalamusQuery = `[THALAMUS MODE] You are Thalamus, the oversight engine. Cortex is currently working on: "${workflowState.goal}". Recent events:\n${eventSummary}\n\nCortex's latest output (last 500 chars):\n${cortexOutput}\n\nUser asks Thalamus: ${text}\n\nRespond as Thalamus — concise, observational, helpful. You can see what Cortex is doing but you're a separate engine.`
+      const thalamusQuery = `[AUDITOR MODE] You are the Auditor, the quality assurance engine. Cortex is currently working on: "${workflowState.goal}". Recent events:\n${eventSummary}\n\nCortex's latest output (last 500 chars):\n${cortexOutput}\n\nUser asks the Auditor: ${text}\n\nRespond as the Auditor — concise, observational, helpful. You can see what Cortex is doing but you're a separate engine.`
 
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -276,13 +276,13 @@ export function ThalamusPane({ workflowState, className = '', onClose }: Thalamu
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-display text-sm font-semibold text-white/90">Thalamus</span>
+              <span className="font-display text-sm font-semibold text-white/90">Auditor</span>
               <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[9px] bg-purple-500/15 text-purple-400">
                 <span className="h-1 w-1 rounded-full bg-current" />
                 watching
               </span>
             </div>
-            <p className="font-mono text-[9px] text-white/20 uppercase tracking-widest">Oversight engine</p>
+            <p className="font-mono text-[9px] text-white/20 uppercase tracking-widest">Quality assurance</p>
           </div>
         </div>
 
@@ -402,7 +402,7 @@ export function ThalamusPane({ workflowState, className = '', onClose }: Thalamu
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKey}
-            placeholder="Ask Thalamus..."
+            placeholder="Ask the Auditor..."
             className="flex-1 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 font-mono text-xs text-white/80 placeholder-white/20 outline-none focus:border-purple-500/40 transition-colors"
           />
           <button

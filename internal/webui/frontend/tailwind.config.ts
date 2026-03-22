@@ -33,7 +33,7 @@ export default {
           glow: '#aecbfb',
           bg: 'rgba(138,180,248,0.08)',
         },
-        observer: {
+        auditor: {
           DEFAULT: '#a78bfa',
           dim: '#8b5cf6',
           glow: '#c4b5fd',
@@ -65,7 +65,7 @@ export default {
         'openai': '0 0 20px rgba(16,163,127,0.12)',
         'anthropic': '0 0 20px rgba(217,119,87,0.12)',
         'gemini': '0 0 20px rgba(138,180,248,0.12)',
-        'observer': '0 0 20px rgba(167,139,250,0.12)',
+        'auditor': '0 0 20px rgba(167,139,250,0.12)',
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',

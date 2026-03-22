@@ -37,7 +37,7 @@ function detectMode(val: string): 'plan' | 'research' | 'schedule' | 'chat' {
 const modeConfig = {
   plan:     { accent: 'text-anthropic',  border: 'border-anthropic/30',  glow: 'shadow-anthropic', label: 'plan',     icon: '▸', placeholder: 'Describe what you want Claude to build...' },
   research: { accent: 'text-gemini',    border: 'border-gemini/30',    glow: 'shadow-gemini',   label: 'research', icon: '◎', placeholder: 'Deep research topic — pulls sources, synthesizes, reports...' },
-  schedule: { accent: 'text-observer',  border: 'border-observer/30',  glow: 'shadow-observer', label: 'schedule', icon: '◷', placeholder: 'every morning at 9am check AI news...' },
+  schedule: { accent: 'text-auditor',  border: 'border-auditor/30',  glow: 'shadow-auditor', label: 'schedule', icon: '◷', placeholder: 'every morning at 9am check AI news...' },
   chat:     { accent: 'text-white/40',  border: 'border-white/[0.08]', glow: '',                label: '',         icon: '',  placeholder: '⌘K to focus · Type a goal or use plan: · research: · schedule:' },
 }
 
@@ -161,7 +161,7 @@ export function CommandBar({ onSubmit, onChat, onResearch, isPlanning, isChattin
                 className={`shrink-0 rounded-lg px-3 py-1.5 font-mono text-[11px] font-bold text-white transition-colors ${
                   mode === 'plan'     ? 'bg-anthropic/80 hover:bg-anthropic' :
                   mode === 'research' ? 'bg-gemini/60 hover:bg-gemini/80' :
-                  mode === 'schedule' ? 'bg-observer/70 hover:bg-observer/90' :
+                  mode === 'schedule' ? 'bg-auditor/70 hover:bg-auditor/90' :
                   'bg-white/[0.08] hover:bg-white/[0.12]'
                 }`}
                 whileTap={{ scale: 0.95 }}
@@ -199,7 +199,7 @@ export function CommandBar({ onSubmit, onChat, onResearch, isPlanning, isChattin
               onClick={(e) => e.stopPropagation()}
             >
               <h3 className="mb-5 flex items-center gap-2.5 font-display text-sm font-semibold text-white/80">
-                <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-observer/20 text-observer text-base">◷</span>
+                <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-auditor/20 text-auditor text-base">◷</span>
                 Create Schedule
               </h3>
 
@@ -207,17 +207,17 @@ export function CommandBar({ onSubmit, onChat, onResearch, isPlanning, isChattin
                 <Field label="Name (optional)">
                   <input type="text" value={scheduleName} onChange={(e) => setScheduleName(e.target.value)}
                     placeholder="Morning AI Briefing"
-                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 font-mono text-xs text-white/70 placeholder-white/20 outline-none focus:border-observer/40" />
+                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 font-mono text-xs text-white/70 placeholder-white/20 outline-none focus:border-auditor/40" />
                 </Field>
                 <Field label="Schedule">
                   <input type="text" value={scheduleModal.schedule} onChange={(e) => setScheduleModal({ ...scheduleModal, schedule: e.target.value })}
                     placeholder="every morning at 9am"
-                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 font-mono text-xs text-observer/70 placeholder-white/20 outline-none focus:border-observer/40" />
+                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 font-mono text-xs text-auditor/70 placeholder-white/20 outline-none focus:border-auditor/40" />
                 </Field>
                 <Field label="Goal">
                   <textarea value={scheduleModal.goal} onChange={(e) => setScheduleModal({ ...scheduleModal, goal: e.target.value })}
                     rows={3}
-                    className="w-full resize-none rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 font-mono text-xs text-white/70 placeholder-white/20 outline-none focus:border-observer/40" />
+                    className="w-full resize-none rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 font-mono text-xs text-white/70 placeholder-white/20 outline-none focus:border-auditor/40" />
                 </Field>
               </div>
 
@@ -235,7 +235,7 @@ export function CommandBar({ onSubmit, onChat, onResearch, isPlanning, isChattin
                 <button
                   onClick={() => void handleScheduleConfirm()}
                   disabled={!scheduleModal.schedule || !scheduleModal.goal || isScheduling}
-                  className="rounded-lg bg-observer/80 hover:bg-observer px-4 py-2 font-mono text-xs font-bold text-white transition-all disabled:opacity-30">
+                  className="rounded-lg bg-auditor/80 hover:bg-auditor px-4 py-2 font-mono text-xs font-bold text-white transition-all disabled:opacity-30">
                   {isScheduling ? 'Creating...' : 'Confirm'}
                 </button>
               </div>

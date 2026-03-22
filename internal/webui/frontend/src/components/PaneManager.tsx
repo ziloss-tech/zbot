@@ -22,7 +22,7 @@ interface PaneConfig {
 const PANE_TEMPLATES: Record<PaneType, Omit<PaneConfig, 'id'>> = {
   chat:      { type: 'chat',      label: 'Chat',      icon: '💬' },
   cortex:    { type: 'cortex',    label: 'Cortex',    icon: '🧠' },
-  thalamus:  { type: 'thalamus',  label: 'Thalamus',  icon: '👁' },
+  thalamus:  { type: 'thalamus',  label: 'Auditor',   icon: '✅' },
   tasks:     { type: 'tasks',     label: 'Tasks',     icon: '📋' },
   history:   { type: 'history',   label: 'History',   icon: '📜' },
   files:        { type: 'files',        label: 'Files',   icon: '📁' },
