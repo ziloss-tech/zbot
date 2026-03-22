@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ziloss-tech/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/crawler"
 	"github.com/ziloss-tech/zbot/internal/research"
 	"github.com/ziloss-tech/zbot/internal/scheduler"
 	"github.com/ziloss-tech/zbot/internal/workflow"
@@ -52,16 +53,18 @@ type Server struct {
 	eventBus          agent.EventBus
 	persistentChat    PersistentChatFunc
 	clearChatHistory  func() error // Sprint 3: clear SQLite conversation history
+	crawlerSessions   *crawler.SessionManager // Hawkeye: visual crawler sessions
 }
 
 // New creates a web UI server on port 18790.
 func New(db *pgxpool.Pool, logger *slog.Logger) *Server {
 	s := &Server{
-		port:   18790,
-		db:     db,
-		logger: logger,
-		mux:    http.NewServeMux(),
-		hub:    NewHub(),
+		port:            18790,
+		db:              db,
+		logger:          logger,
+		mux:             http.NewServeMux(),
+		hub:             NewHub(),
+		crawlerSessions: crawler.NewSessionManager(),
 	}
 	s.routes()
 	return s
@@ -231,6 +234,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/chat/history", s.handleChatHistoryClearAPI)
 	s.mux.HandleFunc("/api/thalamus", s.handleThalamusAPI)
 	s.mux.HandleFunc("/api/events/", s.handleEventBusSSE)
+
+	// Hawkeye — Visual Crawler.
+	s.mux.HandleFunc("/api/crawler/start", s.handleCrawlerStart)
+	s.mux.HandleFunc("/api/crawler/navigate", s.handleCrawlerNavigate)
+	s.mux.HandleFunc("/api/crawler/click", s.handleCrawlerClick)
+	s.mux.HandleFunc("/api/crawler/type", s.handleCrawlerType)
+	s.mux.HandleFunc("/api/crawler/scroll", s.handleCrawlerScroll)
+	s.mux.HandleFunc("/api/crawler/screenshot", s.handleCrawlerScreenshot)
+	s.mux.HandleFunc("/api/crawler/log", s.handleCrawlerLog)
+	s.mux.HandleFunc("/api/crawler/stop", s.handleCrawlerStop)
+	s.mux.HandleFunc("/api/crawler/sessions", s.handleCrawlerSessions)
 
 	// Sprint 20 — Persistent Claude Chat.
 	s.mux.HandleFunc("/api/claude/chat", s.handleClaudeChatAPI)
