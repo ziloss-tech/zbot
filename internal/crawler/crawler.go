@@ -2,7 +2,6 @@ package crawler
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -12,89 +11,540 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/ysmood/gson"
+
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
-// Crawler wraps a headless go-rod browser with grid navigation and action logging.
-// Screenshots are streamed via an EventEmitter callback — no Chrome window opens.
+// Crawler is the main engine managing browser lifecycle and navigation.
 type Crawler struct {
-	browser   *rod.Browser
-	page      *rod.Page
-	grid      *Grid
-	logger    *ActionLogger
-	sessionID string
-	status    CrawlerStatus
-	mu        sync.RWMutex
-	onEvent   func(CrawlEvent) // callback for event bus integration
-	createdAt time.Time
+	browser    *rod.Browser
+	page       *rod.Page
+	grid       *Grid
+	logger     *ActionLogger
+	streamer   *ScreenshotStreamer
+	sessionID  string
+	eventBus   agent.EventBus
+	mu         sync.RWMutex
+	status     CrawlerStatus
+	viewport   ViewportSize
+	lastAction time.Time
+	rateLimit  time.Duration
 }
 
-// EventEmitter is a function that receives crawl events (for wiring to ZBOT's event bus).
-type EventEmitter func(CrawlEvent)
-
-// NewCrawler launches a headless browser and returns a Crawler.
-func NewCrawler(viewportW, viewportH, cellSize int, emitter EventEmitter) (*Crawler, error) {
-	path, _ := launcher.LookPath()
-	if path == "" {
-		return nil, fmt.Errorf("headless browser unavailable — install Chromium or Chrome")
-	}
-
-	l := launcher.New().Headless(true).Leakless(true)
-	controlURL, err := l.Launch()
+// NewCrawler initializes a headless Chrome browser and returns a Crawler instance.
+func NewCrawler(eventBus agent.EventBus, sessionID string, viewport ViewportSize) (*Crawler, error) {
+	// Launch headless Chrome via rod launcher
+	u, err := launcher.New().Headless(true).Launch()
 	if err != nil {
-		return nil, fmt.Errorf("launch browser: %w", err)
+		return nil, fmt.Errorf("failed to launch Chrome: %w", err)
 	}
 
-	browser := rod.New().ControlURL(controlURL)
-	if err := browser.Connect(); err != nil {
-		return nil, fmt.Errorf("connect browser: %w", err)
-	}
-
-	page, err := browser.Page(proto.TargetCreateTarget{})
+	// Connect rod browser
+	browser := rod.New().ControlURL(u)
+	err = browser.Connect()
 	if err != nil {
-		browser.Close()
-		return nil, fmt.Errorf("create page: %w", err)
+		return nil, fmt.Errorf("failed to connect browser: %w", err)
 	}
 
-	_ = page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
-		Width: viewportW, Height: viewportH, DeviceScaleFactor: 1,
+	// Create a page
+	page, err := browser.Page(proto.TargetCreateTarget{
+		URL: "about:blank",
 	})
+	if err != nil {
+		browser.MustClose()
+		return nil, fmt.Errorf("failed to create page: %w", err)
+	}
 
-	sid := make([]byte, 8)
-	_, _ = rand.Read(sid)
-	sessionID := fmt.Sprintf("crawl-%x", sid)
+	// Set viewport size
+	err = proto.EmulationSetDeviceMetricsOverride{
+		Width:             int(viewport.Width),
+		Height:            int(viewport.Height),
+		DeviceScaleFactor: 1,
+		Mobile:            false,
+	}.Call(page)
+	if err != nil {
+		page.MustClose()
+		browser.MustClose()
+		return nil, fmt.Errorf("failed to set viewport: %w", err)
+	}
 
+	// Initialize Grid
+	grid := NewGrid(viewport.Width, viewport.Height, 64)
+
+	// Initialize ActionLogger
+	logger := NewActionLogger(sessionID, eventBus)
+
+	// Create Crawler
 	c := &Crawler{
-		browser:   browser,
-		page:      page,
-		grid:      NewGrid(viewportW, viewportH, cellSize),
-		logger:    NewActionLogger(),
-		sessionID: sessionID,
-		status:    StatusIdle,
-		onEvent:   emitter,
-		createdAt: time.Now(),
+		browser:    browser,
+		page:       page,
+		grid:       grid,
+		logger:     logger,
+		sessionID:  sessionID,
+		eventBus:   eventBus,
+		status:     StatusIdle,
+		viewport:   viewport,
+		lastAction: time.Now(),
+		rateLimit:  500 * time.Millisecond,
 	}
 
-	c.emit(CrawlEvent{
-		SessionID: sessionID,
-		Type:      EventCrawlStatus,
-		Status:    StatusIdle,
-		Timestamp: time.Now(),
-	})
+	// Emit status event
+	c.emitEvent(NewCrawlEvent(sessionID, agent.EventType("crawl_status"), "idle", map[string]any{
+		"status": "idle",
+	}))
 
 	return c, nil
 }
 
-func (c *Crawler) emit(ev CrawlEvent) {
-	if c.onEvent != nil {
-		c.onEvent(ev)
+// Navigate navigates the page to the given URL.
+func (c *Crawler) Navigate(url string) error {
+	c.mu.Lock()
+	c.setStatus(StatusNavigating)
+	c.mu.Unlock()
+
+	// Enforce rate limit
+	c.enforceRateLimit()
+
+	startTime := time.Now()
+
+	// Navigate to URL
+	err := c.page.Navigate(url)
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return fmt.Errorf("navigation failed: %w", err)
 	}
+
+	// Wait for page load
+	err = c.page.WaitLoad()
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return fmt.Errorf("wait load failed: %w", err)
+	}
+
+	// Capture screenshot
+	_, screenshotB64, err := c.captureScreenshot()
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return fmt.Errorf("screenshot capture failed: %w", err)
+	}
+
+	// Get page title
+	title := c.PageTitle()
+
+	duration := time.Since(startTime)
+
+	// Log action
+	c.logger.Log(ActionEntry{
+		Timestamp:     time.Now(),
+		Action:        "navigate",
+		URL:           url,
+		PageTitle:     title,
+		DurationMs:    duration.Milliseconds(),
+		ScreenshotB64: screenshotB64,
+	})
+
+	c.mu.Lock()
+	c.setStatus(StatusIdle)
+	c.lastAction = time.Now()
+	c.mu.Unlock()
+
+	return nil
 }
 
-// SessionID returns the crawler's unique session identifier.
-func (c *Crawler) SessionID() string { return c.sessionID }
+// Click clicks on the element at the given grid label.
+func (c *Crawler) Click(gridLabel string) (*ClickResult, error) {
+	c.mu.Lock()
+	c.setStatus(StatusActing)
+	c.mu.Unlock()
 
-// Grid returns the current grid configuration.
-func (c *Crawler) Grid() *Grid { return c.grid }
+	// Resolve grid cell
+	cell, err := c.grid.CellFromLabel(gridLabel)
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("grid resolution failed: %w", err)
+	}
+
+	// Get pixel center of grid cell
+	x, y := cell.CenterX, cell.CenterY
+
+	// Capture BEFORE screenshot
+	_, beforeB64, err := c.captureScreenshot()
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("before screenshot failed: %w", err)
+	}
+
+	// Get element info at grid center
+	elemInfo, err := c.ElementAtGrid(gridLabel)
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("element info retrieval failed: %w", err)
+	}
+
+	// Click at pixel coordinates
+	err = c.page.Mouse.MoveTo(proto.Point{X: float64(x), Y: float64(y)})
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("mouse move failed: %w", err)
+	}
+
+	err = c.page.Mouse.Click(proto.InputMouseButtonLeft, 1)
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("mouse click failed: %w", err)
+	}
+
+	// Wait briefly for page to settle
+	time.Sleep(200 * time.Millisecond)
+
+	// Capture AFTER screenshot
+	_, afterB64, err := c.captureScreenshot()
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("after screenshot failed: %w", err)
+	}
+
+	// Log action
+	c.logger.Log(ActionEntry{
+		Timestamp:     time.Now(),
+		Action:        "click",
+		GridCell:      gridLabel,
+		ElementTag:    elemInfo.Tag,
+		ElementText:   elemInfo.Text,
+		PixelX:        x,
+		PixelY:        y,
+		ScreenshotB64: beforeB64,
+		URL:           c.CurrentURL(),
+	})
+
+	c.mu.Lock()
+	c.setStatus(StatusIdle)
+	c.lastAction = time.Now()
+	c.mu.Unlock()
+
+	return &ClickResult{
+		Element:      elemInfo,
+		BeforeShot:   beforeB64,
+		AfterShot:    afterB64,
+		GridCell:     cell.Label,
+		PixelX:       x,
+		PixelY:       y,
+		Success:      true,
+	}, nil
+}
+
+// Type types text into the focused element.
+func (c *Crawler) Type(text string) error {
+	c.mu.Lock()
+	c.setStatus(StatusActing)
+	c.mu.Unlock()
+
+	// Type text into focused element
+	err := c.page.InsertText(text)
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return fmt.Errorf("text insertion failed: %w", err)
+	}
+
+	// Capture screenshot after typing
+	_, screenshotB64, err := c.captureScreenshot()
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return fmt.Errorf("screenshot capture failed: %w", err)
+	}
+
+	// Log action
+	c.logger.Log(ActionEntry{
+		Timestamp:     time.Now(),
+		Action:        "type",
+		Input:         text,
+		ScreenshotB64: screenshotB64,
+		URL:           c.CurrentURL(),
+	})
+
+	c.mu.Lock()
+	c.setStatus(StatusIdle)
+	c.lastAction = time.Now()
+	c.mu.Unlock()
+
+	return nil
+}
+
+// Scroll scrolls the page in the given direction.
+func (c *Crawler) Scroll(direction string, amount int) error {
+	c.mu.Lock()
+	c.setStatus(StatusActing)
+	c.mu.Unlock()
+
+	var deltaX, deltaY float64
+
+	// Map direction to deltas
+	switch strings.ToLower(direction) {
+	case "down":
+		deltaY = float64(amount * 100)
+	case "up":
+		deltaY = float64(-amount * 100)
+	case "left":
+		deltaX = float64(-amount * 100)
+	case "right":
+		deltaX = float64(amount * 100)
+	default:
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return fmt.Errorf("invalid scroll direction: %s", direction)
+	}
+
+	// Perform scroll
+	err := c.page.Mouse.Scroll(deltaX, deltaY, 5)
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return fmt.Errorf("scroll failed: %w", err)
+	}
+
+	// Wait briefly for scroll to settle
+	time.Sleep(200 * time.Millisecond)
+
+	// Capture screenshot after scroll
+	_, screenshotB64, err := c.captureScreenshot()
+	if err != nil {
+		c.mu.Lock()
+		c.setStatus(StatusIdle)
+		c.mu.Unlock()
+		return fmt.Errorf("screenshot capture failed: %w", err)
+	}
+
+	// Log action
+	c.logger.Log(ActionEntry{
+		Timestamp:     time.Now(),
+		Action:        "scroll",
+		Input:         fmt.Sprintf("%s:%d", direction, amount),
+		ScreenshotB64: screenshotB64,
+		URL:           c.CurrentURL(),
+	})
+
+	c.mu.Lock()
+	c.setStatus(StatusIdle)
+	c.lastAction = time.Now()
+	c.mu.Unlock()
+
+	return nil
+}
+
+// Screenshot captures the current page as a base64-encoded image.
+func (c *Crawler) Screenshot() (string, error) {
+	buf, err := c.page.Screenshot(false, &proto.PageCaptureScreenshot{
+		Format:  proto.PageCaptureScreenshotFormatJpeg,
+		Quality: gson.Int(60),
+	})
+	if err != nil {
+		return "", fmt.Errorf("screenshot failed: %w", err)
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(buf)
+	return b64, nil
+}
+
+// ScreenshotWithGrid captures the page and overlays the grid.
+func (c *Crawler) ScreenshotWithGrid() (string, error) {
+	// Capture screenshot as PNG bytes
+	buf, err := c.page.Screenshot(false, &proto.PageCaptureScreenshot{
+		Format: proto.PageCaptureScreenshotFormatPng,
+	})
+	if err != nil {
+		return "", fmt.Errorf("screenshot failed: %w", err)
+	}
+
+	// Render grid overlay
+	overlayBytes, err := RenderGridOverlay(buf, c.grid)
+	if err != nil {
+		return "", fmt.Errorf("grid overlay failed: %w", err)
+	}
+
+	// Encode to base64
+	b64 := base64.StdEncoding.EncodeToString(overlayBytes)
+	return b64, nil
+}
+
+// ElementAtGrid retrieves element information at the grid cell center.
+func (c *Crawler) ElementAtGrid(gridLabel string) (*ElementInfo, error) {
+	// Resolve grid cell
+	cell, err := c.grid.CellFromLabel(gridLabel)
+	if err != nil {
+		return nil, fmt.Errorf("grid resolution failed: %w", err)
+	}
+
+	// Get pixel center
+	x, y := cell.CenterX, cell.CenterY
+
+	// Evaluate JavaScript to get element at point
+	jsCode := `
+	(x, y) => {
+		const elem = document.elementFromPoint(x, y);
+		if (!elem) return null;
+
+		const rect = elem.getBoundingClientRect();
+		const attrs = {};
+		for (let attr of elem.attributes) {
+			attrs[attr.name] = attr.value;
+		}
+
+		return {
+			tag: elem.tagName.toLowerCase(),
+			text: elem.innerText || elem.textContent || '',
+			html: elem.innerHTML,
+			attributes: attrs,
+			boundingBox: {
+				x: Math.round(rect.left),
+				y: Math.round(rect.top),
+				width: Math.round(rect.width),
+				height: Math.round(rect.height)
+			}
+		};
+	}
+	`
+
+	result, err := c.page.Eval(jsCode, x, y)
+	if err != nil {
+		return nil, fmt.Errorf("element evaluation failed: %w", err)
+	}
+
+	if result.Value.Nil() {
+		return &ElementInfo{
+			Tag:  "unknown",
+			Text: "",
+		}, nil
+	}
+
+	// Parse result (result.Value is a gson.JSON object from CDP)
+	// We'll extract the basic info from the eval result
+	elemInfo := &ElementInfo{
+		Tag: "unknown",
+	}
+
+	// Note: Detailed parsing of result.Value would require unmarshaling
+	// For now, we'll do a simpler extraction using the gson JSON API
+	data := result.Value.Map()
+	if len(data) > 0 {
+		if tagJSON, exists := data["tag"]; exists {
+			elemInfo.Tag = tagJSON.String()
+		}
+		if textJSON, exists := data["text"]; exists {
+			elemInfo.Text = textJSON.String()
+		}
+		if attrsJSON, exists := data["attributes"]; exists {
+			attrs := attrsJSON.Map()
+			elemInfo.Attrs = make(map[string]string)
+			for k, v := range attrs {
+				elemInfo.Attrs[k] = v.String()
+			}
+		}
+		if bboxJSON, exists := data["boundingBox"]; exists && !bboxJSON.Nil() {
+			bbox := bboxJSON.Map()
+			elemInfo.BoundingBox = &Rect{
+				X:      bbox["x"].Num(),
+				Y:      bbox["y"].Num(),
+				Width:  bbox["width"].Num(),
+				Height: bbox["height"].Num(),
+			}
+			// Map bounding box to grid cells
+			elemInfo.GridCells = c.grid.CellsFromRect(
+				int(elemInfo.BoundingBox.X),
+				int(elemInfo.BoundingBox.Y),
+				int(elemInfo.BoundingBox.X + elemInfo.BoundingBox.Width),
+				int(elemInfo.BoundingBox.Y + elemInfo.BoundingBox.Height),
+			)
+		}
+	}
+
+	return elemInfo, nil
+}
+
+// PageText extracts all visible text from the page.
+func (c *Crawler) PageText() (string, error) {
+	result, err := c.page.Eval("() => document.body.innerText")
+	if err != nil {
+		return "", fmt.Errorf("page text extraction failed: %w", err)
+	}
+
+	if result.Value.Nil() {
+		return "", nil
+	}
+
+	return result.Value.String(), nil
+}
+
+// CurrentURL returns the current page URL.
+func (c *Crawler) CurrentURL() string {
+	result, err := c.page.Eval("() => window.location.href")
+	if err != nil {
+		return ""
+	}
+
+	if result.Value.Nil() {
+		return ""
+	}
+
+	return result.Value.String()
+}
+
+// PageTitle returns the current page title.
+func (c *Crawler) PageTitle() string {
+	result, err := c.page.Eval("() => document.title")
+	if err != nil {
+		return ""
+	}
+
+	if result.Value.Nil() {
+		return ""
+	}
+
+	return result.Value.String()
+}
+
+// Close closes the browser and releases resources.
+func (c *Crawler) Close() {
+	c.mu.Lock()
+	c.setStatus(StatusStopped)
+	c.mu.Unlock()
+
+	if c.streamer != nil {
+		c.streamer.Stop()
+	}
+
+	if c.page != nil {
+		c.page.MustClose()
+	}
+
+	if c.browser != nil {
+		c.browser.MustClose()
+	}
+}
 
 // Status returns the current crawler status.
 func (c *Crawler) Status() CrawlerStatus {
@@ -103,360 +553,65 @@ func (c *Crawler) Status() CrawlerStatus {
 	return c.status
 }
 
+// Grid returns the grid instance.
+func (c *Crawler) Grid() *Grid {
+	return c.grid
+}
+
+// Logger returns the action logger instance.
+func (c *Crawler) Logger() *ActionLogger {
+	return c.logger
+}
+
+// setStatus sets the crawler status and emits a status event (must be called with lock held).
 func (c *Crawler) setStatus(s CrawlerStatus) {
-	c.mu.Lock()
 	c.status = s
-	c.mu.Unlock()
-	c.emit(CrawlEvent{
-		SessionID: c.sessionID,
-		Type:      EventCrawlStatus,
-		Status:    s,
-		Timestamp: time.Now(),
+	c.emitEvent(NewCrawlEvent(c.sessionID, agent.EventType("crawl_status"), string(s), map[string]any{
+		"status": string(s),
+	}))
+}
+
+// enforceRateLimit sleeps if less than rateLimit time has passed since last action.
+func (c *Crawler) enforceRateLimit() {
+	c.mu.RLock()
+	lastAction := c.lastAction
+	rateLimit := c.rateLimit
+	c.mu.RUnlock()
+
+	elapsed := time.Since(lastAction)
+	if elapsed < rateLimit {
+		time.Sleep(rateLimit - elapsed)
+	}
+}
+
+// emitEvent publishes an event through the event bus.
+func (c *Crawler) emitEvent(event agent.AgentEvent) {
+	if c.eventBus != nil {
+		c.eventBus.Emit(context.Background(), event)
+	}
+}
+
+// captureScreenshot captures a screenshot and returns raw PNG bytes and base64-encoded JPEG.
+func (c *Crawler) captureScreenshot() ([]byte, string, error) {
+	// Capture as PNG for processing
+	pngBuf, err := c.page.Screenshot(false, &proto.PageCaptureScreenshot{
+		Format: proto.PageCaptureScreenshotFormatPng,
 	})
-}
-
-// Logger returns the action logger.
-func (c *Crawler) Logger() *ActionLogger { return c.logger }
-
-// CreatedAt returns when this session was created.
-func (c *Crawler) CreatedAt() time.Time { return c.createdAt }
-
-// Navigate goes to a URL, waits for stability, captures a screenshot, and emits an event.
-func (c *Crawler) Navigate(rawURL string) error {
-	c.setStatus(StatusNavigating)
-	start := time.Now()
-
-	if err := c.page.Navigate(rawURL); err != nil {
-		c.logAction("navigate", "", rawURL, false, err.Error(), time.Since(start))
-		c.setStatus(StatusIdle)
-		return fmt.Errorf("navigate: %w", err)
-	}
-
-	_ = c.page.WaitStable(800 * time.Millisecond)
-	dur := time.Since(start)
-
-	title := c.pageTitle()
-	url := c.currentURL()
-	c.logAction("navigate", "", url, true, "", dur)
-
-	shot, _ := c.ScreenshotJPEG()
-	c.emit(CrawlEvent{
-		SessionID:  c.sessionID,
-		Type:       EventCrawlAction,
-		Action:     "navigate",
-		URL:        url,
-		PageTitle:  title,
-		Screenshot: shot,
-		DurationMs: dur.Milliseconds(),
-		Timestamp:  time.Now(),
-	})
-
-	c.setStatus(StatusIdle)
-	return nil
-}
-
-// Click clicks the center of a grid cell, logs the action with element info.
-func (c *Crawler) Click(gridLabel string) (*ElementInfo, error) {
-	cell, err := c.grid.CellFromLabel(gridLabel)
 	if err != nil {
-		return nil, err
+		return nil, "", fmt.Errorf("PNG screenshot failed: %w", err)
 	}
 
-	c.setStatus(StatusActing)
-	start := time.Now()
-
-	// Get element info at click point before clicking.
-	info := c.elementAtPixel(cell.CenterX, cell.CenterY)
-
-	// Click at the pixel coordinates using go-rod's mouse.
-	err = c.page.Mouse.MoveTo(proto.NewPoint(float64(cell.CenterX), float64(cell.CenterY)))
-	if err == nil {
-		err = c.page.Mouse.Click(proto.InputMouseButtonLeft, 1)
-	}
-
-	// Brief wait for any navigation or DOM update.
-	_ = c.page.WaitStable(400 * time.Millisecond)
-	dur := time.Since(start)
-
-	success := err == nil
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	}
-
-	c.logActionFull("click", gridLabel, cell.CenterX, cell.CenterY, c.currentURL(), "", info, success, errMsg, dur)
-
-	shot, _ := c.ScreenshotJPEG()
-	c.emit(CrawlEvent{
-		SessionID:   c.sessionID,
-		Type:        EventCrawlAction,
-		Action:      "click",
-		GridCell:    gridLabel,
-		URL:         c.currentURL(),
-		ElementInfo: info,
-		Screenshot:  shot,
-		DurationMs:  dur.Milliseconds(),
-		PageTitle:   c.pageTitle(),
-		Timestamp:   time.Now(),
-	})
-
-	c.setStatus(StatusIdle)
-	if err != nil {
-		return info, fmt.Errorf("click %s: %w", gridLabel, err)
-	}
-	return info, nil
-}
-
-// Type types text into the currently focused element.
-func (c *Crawler) Type(text string) error {
-	c.setStatus(StatusActing)
-	start := time.Now()
-
-	err := c.page.InsertText(text)
-	dur := time.Since(start)
-
-	success := err == nil
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	}
-
-	c.logAction("type", "", text, success, errMsg, dur)
-	c.emit(CrawlEvent{
-		SessionID:  c.sessionID,
-		Type:       EventCrawlAction,
-		Action:     "type",
-		URL:        c.currentURL(),
-		DurationMs: dur.Milliseconds(),
-		Timestamp:  time.Now(),
-	})
-
-	c.setStatus(StatusIdle)
-	return err
-}
-
-// Scroll scrolls the page in the given direction.
-func (c *Crawler) Scroll(direction string, amount int) error {
-	c.setStatus(StatusActing)
-	start := time.Now()
-
-	var dx, dy float64
-	switch strings.ToLower(direction) {
-	case "down":
-		dy = float64(amount * 100)
-	case "up":
-		dy = -float64(amount * 100)
-	case "right":
-		dx = float64(amount * 100)
-	case "left":
-		dx = -float64(amount * 100)
-	default:
-		c.setStatus(StatusIdle)
-		return fmt.Errorf("invalid scroll direction: %s", direction)
-	}
-
-	err := c.page.Mouse.Scroll(dx, dy, 1)
-	_ = c.page.WaitStable(300 * time.Millisecond)
-	dur := time.Since(start)
-
-	success := err == nil
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	}
-
-	c.logAction("scroll", "", fmt.Sprintf("%s x%d", direction, amount), success, errMsg, dur)
-	c.setStatus(StatusIdle)
-	return err
-}
-
-// ScreenshotJPEG captures the current page as a base64-encoded JPEG.
-func (c *Crawler) ScreenshotJPEG() (string, error) {
-	quality := 60
-	data, err := c.page.Screenshot(true, &proto.PageCaptureScreenshot{
+	// Capture as JPEG for base64 (smaller size)
+	jpegBuf, err := c.page.Screenshot(false, &proto.PageCaptureScreenshot{
 		Format:  proto.PageCaptureScreenshotFormatJpeg,
-		Quality: &quality,
+		Quality: gson.Int(60),
 	})
 	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(data), nil
-}
-
-// ReadPageText extracts all visible text from the current page.
-func (c *Crawler) ReadPageText() (string, error) {
-	el, err := c.page.Element("body")
-	if err != nil {
-		return "", err
-	}
-	text, err := el.Text()
-	if err != nil {
-		return "", err
-	}
-	// Truncate to prevent enormous payloads.
-	if len(text) > 8000 {
-		text = text[:8000] + "\n... [truncated]"
-	}
-	return text, nil
-}
-
-// InteractiveElements finds all clickable elements and maps them to grid cells.
-func (c *Crawler) InteractiveElements() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = ctx
-
-	js := `(() => {
-		const selectors = 'a, button, input, select, textarea, [onclick], [role="button"], [tabindex]';
-		const els = document.querySelectorAll(selectors);
-		const results = [];
-		for (const el of els) {
-			const rect = el.getBoundingClientRect();
-			if (rect.width === 0 || rect.height === 0) continue;
-			const text = (el.innerText || el.value || el.placeholder || el.title || '').trim().substring(0, 60);
-			if (!text && el.tagName !== 'INPUT') continue;
-			results.push({
-				tag: el.tagName.toLowerCase(),
-				text: text,
-				type: el.type || '',
-				href: el.href || '',
-				cx: Math.round(rect.left + rect.width / 2),
-				cy: Math.round(rect.top + rect.height / 2),
-			});
-		}
-		return JSON.stringify(results.slice(0, 80));
-	})()`
-
-	res, err := c.page.Eval(js)
-	if err != nil {
-		return "", fmt.Errorf("eval interactive elements: %w", err)
+		return nil, "", fmt.Errorf("JPEG screenshot failed: %w", err)
 	}
 
-	// Parse and map to grid labels.
-	var elements []struct {
-		Tag  string `json:"tag"`
-		Text string `json:"text"`
-		Type string `json:"type"`
-		Href string `json:"href"`
-		Cx   int    `json:"cx"`
-		Cy   int    `json:"cy"`
-	}
+	// Encode JPEG to base64
+	b64 := base64.StdEncoding.EncodeToString(jpegBuf)
 
-	if err := res.Value.Unmarshal(&elements); err != nil {
-		return res.Value.String(), nil // fallback: return raw
-	}
-
-	var sb strings.Builder
-	for _, el := range elements {
-		label := c.grid.LabelFromPixel(el.Cx, el.Cy)
-		desc := fmt.Sprintf("%s: <%s>", label, el.Tag)
-		if el.Type != "" {
-			desc += fmt.Sprintf(" type=%s", el.Type)
-		}
-		if el.Text != "" {
-			desc += fmt.Sprintf(" %q", el.Text)
-		}
-		if el.Href != "" && len(el.Href) < 80 {
-			desc += fmt.Sprintf(" href=%s", el.Href)
-		}
-		sb.WriteString(desc)
-		sb.WriteByte('\n')
-	}
-	return sb.String(), nil
-}
-
-// CurrentURL returns the current page URL.
-func (c *Crawler) CurrentURL() string { return c.currentURL() }
-
-func (c *Crawler) currentURL() string {
-	info, err := c.page.Info()
-	if err != nil {
-		return ""
-	}
-	return info.URL
-}
-
-func (c *Crawler) pageTitle() string {
-	info, err := c.page.Info()
-	if err != nil {
-		return ""
-	}
-	return info.Title
-}
-
-// elementAtPixel gets DOM element info at the given pixel via JavaScript.
-func (c *Crawler) elementAtPixel(x, y int) *ElementInfo {
-	js := fmt.Sprintf(`(() => {
-		const el = document.elementFromPoint(%d, %d);
-		if (!el) return JSON.stringify(null);
-		const attrs = {};
-		for (const a of el.attributes || []) {
-			if (['href','class','id','name','type','value','placeholder','role','aria-label'].includes(a.name)) {
-				attrs[a.name] = a.value.substring(0, 120);
-			}
-		}
-		return JSON.stringify({
-			tag: el.tagName.toLowerCase(),
-			text: (el.innerText || el.value || '').trim().substring(0, 100),
-			attrs: attrs,
-		});
-	})()`, x, y)
-
-	res, err := c.page.Eval(js)
-	if err != nil {
-		return nil
-	}
-
-	var info struct {
-		Tag   string            `json:"tag"`
-		Text  string            `json:"text"`
-		Attrs map[string]string `json:"attrs"`
-	}
-	if err := res.Value.Unmarshal(&info); err != nil {
-		return nil
-	}
-	if info.Tag == "" {
-		return nil
-	}
-	return &ElementInfo{Tag: info.Tag, Text: info.Text, Attrs: info.Attrs}
-}
-
-// logAction is a convenience for simple actions.
-func (c *Crawler) logAction(action, gridCell, input string, success bool, errMsg string, dur time.Duration) {
-	c.logActionFull(action, gridCell, 0, 0, c.currentURL(), input, nil, success, errMsg, dur)
-}
-
-// logActionFull logs an action with full metadata.
-func (c *Crawler) logActionFull(action, gridCell string, px, py int, url, input string, info *ElementInfo, success bool, errMsg string, dur time.Duration) {
-	entry := ActionEntry{
-		ID:         fmt.Sprintf("act-%d", time.Now().UnixNano()),
-		Timestamp:  time.Now(),
-		Action:     action,
-		GridCell:   gridCell,
-		PixelX:     px,
-		PixelY:     py,
-		URL:        url,
-		Input:      input,
-		Success:    success,
-		Error:      errMsg,
-		DurationMs: dur.Milliseconds(),
-		PageTitle:  c.pageTitle(),
-	}
-	if info != nil {
-		entry.ElementTag = info.Tag
-		entry.ElementText = info.Text
-		entry.ElementAttrs = info.Attrs
-	}
-	c.logger.Log(entry)
-}
-
-// Close tears down the browser and marks the session stopped.
-func (c *Crawler) Close() {
-	c.setStatus(StatusStopped)
-	if c.page != nil {
-		_ = c.page.Close()
-	}
-	if c.browser != nil {
-		_ = c.browser.Close()
-	}
+	return pngBuf, b64, nil
 }

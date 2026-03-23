@@ -194,3 +194,51 @@ export interface ChatMessage {
   thinking?: string
   isStreaming?: boolean
 }
+
+
+// ─── Hawkeye: Visual Crawler Types ──────────────────────────────────────────
+
+export type CrawlerStatus = 'idle' | 'navigating' | 'acting' | 'waiting' | 'stopped'
+
+export interface GridConfig {
+  cell_width: number
+  cell_height: number
+  cols: number
+  rows: number
+  viewport_width: number
+  viewport_height: number
+}
+
+export interface ElementInfo {
+  tag: string
+  text: string
+  attrs?: Record<string, string>
+  grid_cells?: string[]
+}
+
+export interface CrawlActionEntry {
+  id: string
+  timestamp: string
+  action: string
+  grid_cell?: string
+  pixel_x?: number
+  pixel_y?: number
+  url: string
+  input?: string
+  element_tag?: string
+  element_text?: string
+  element_attrs?: Record<string, string>
+  success: boolean
+  error?: string
+  duration_ms: number
+  page_title?: string
+}
+
+export interface CrawlSessionInfo {
+  session_id: string
+  status: CrawlerStatus
+  current_url: string
+  grid: GridConfig
+  action_count: number
+  created_at: string
+}

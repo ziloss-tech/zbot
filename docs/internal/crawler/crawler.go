@@ -1,6 +1,7 @@
 package crawler
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/ysmood/gson"
+
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // Crawler is the main engine managing browser lifecycle and navigation.
@@ -21,7 +24,7 @@ type Crawler struct {
 	logger     *ActionLogger
 	streamer   *ScreenshotStreamer
 	sessionID  string
-	eventBus   EventBus
+	eventBus   agent.EventBus
 	mu         sync.RWMutex
 	status     CrawlerStatus
 	viewport   ViewportSize
@@ -30,7 +33,7 @@ type Crawler struct {
 }
 
 // NewCrawler initializes a headless Chrome browser and returns a Crawler instance.
-func NewCrawler(eventBus EventBus, sessionID string, viewport ViewportSize) (*Crawler, error) {
+func NewCrawler(eventBus agent.EventBus, sessionID string, viewport ViewportSize) (*Crawler, error) {
 	// Launch headless Chrome via rod launcher
 	u, err := launcher.New().Headless(true).Launch()
 	if err != nil {
@@ -87,12 +90,9 @@ func NewCrawler(eventBus EventBus, sessionID string, viewport ViewportSize) (*Cr
 	}
 
 	// Emit status event
-	c.emitEvent(CrawlEvent{
-		Type:      EventCrawlStatus,
-		SessionID: sessionID,
-		Status:    StatusIdle,
-		Timestamp: time.Now(),
-	})
+	c.emitEvent(NewCrawlEvent(sessionID, agent.EventType("crawl_status"), "idle", map[string]any{
+		"status": "idle",
+	}))
 
 	return c, nil
 }
@@ -566,12 +566,9 @@ func (c *Crawler) Logger() *ActionLogger {
 // setStatus sets the crawler status and emits a status event (must be called with lock held).
 func (c *Crawler) setStatus(s CrawlerStatus) {
 	c.status = s
-	c.emitEvent(CrawlEvent{
-		Type:      EventCrawlStatus,
-		SessionID: c.sessionID,
-		Status:    s,
-		Timestamp: time.Now(),
-	})
+	c.emitEvent(NewCrawlEvent(c.sessionID, agent.EventType("crawl_status"), string(s), map[string]any{
+		"status": string(s),
+	}))
 }
 
 // enforceRateLimit sleeps if less than rateLimit time has passed since last action.
@@ -588,9 +585,9 @@ func (c *Crawler) enforceRateLimit() {
 }
 
 // emitEvent publishes an event through the event bus.
-func (c *Crawler) emitEvent(event CrawlEvent) {
+func (c *Crawler) emitEvent(event agent.AgentEvent) {
 	if c.eventBus != nil {
-		c.eventBus.Publish(c.sessionID, event)
+		c.eventBus.Emit(context.Background(), event)
 	}
 }
 

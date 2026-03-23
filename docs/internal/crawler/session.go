@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 var sessionCounter uint64
@@ -23,7 +25,7 @@ type SessionInfo struct {
 // SessionManager manages multiple concurrent crawl sessions
 type SessionManager struct {
 	sessions map[string]*sessionEntry
-	eventBus EventBus
+	eventBus agent.EventBus
 	mu       sync.RWMutex
 }
 
@@ -34,7 +36,7 @@ type sessionEntry struct {
 }
 
 // NewSessionManager creates a new SessionManager
-func NewSessionManager(eventBus EventBus) *SessionManager {
+func NewSessionManager(eventBus agent.EventBus) *SessionManager {
 	return &SessionManager{
 		sessions: make(map[string]*sessionEntry),
 		eventBus: eventBus,

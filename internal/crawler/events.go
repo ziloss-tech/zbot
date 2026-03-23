@@ -1,8 +1,12 @@
 package crawler
 
-import "time"
+import (
+	"time"
 
-// CrawlerStatus represents the current state of the crawler.
+	"github.com/ziloss-tech/zbot/internal/agent"
+)
+
+// CrawlerStatus represents the current state of a crawler session
 type CrawlerStatus string
 
 const (
@@ -13,66 +17,48 @@ const (
 	StatusStopped    CrawlerStatus = "stopped"
 )
 
-// CrawlEventType identifies the kind of crawl event emitted to the event bus.
-type CrawlEventType string
-
-const (
-	EventCrawlScreenshot CrawlEventType = "crawl_screenshot"
-	EventCrawlAction     CrawlEventType = "crawl_action"
-	EventCrawlStatus     CrawlEventType = "crawl_status"
-	EventCrawlError      CrawlEventType = "crawl_error"
-	EventCrawlGrid       CrawlEventType = "crawl_grid_update"
-)
-
-// CrawlEvent is the payload for crawl-related events.
-type CrawlEvent struct {
-	SessionID   string         `json:"session_id"`
-	Type        CrawlEventType `json:"type"`
-	Action      string         `json:"action,omitempty"`
-	GridCell    string         `json:"grid_cell,omitempty"`
-	URL         string         `json:"url,omitempty"`
-	ElementInfo *ElementInfo   `json:"element_info,omitempty"`
-	Screenshot  string         `json:"screenshot,omitempty"` // base64 JPEG
-	Status      CrawlerStatus  `json:"status,omitempty"`
-	Error       string         `json:"error,omitempty"`
-	DurationMs  int64          `json:"duration_ms,omitempty"`
-	PageTitle   string         `json:"page_title,omitempty"`
-	Timestamp   time.Time      `json:"timestamp"`
+// ViewportSize defines browser viewport dimensions
+type ViewportSize struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
-// ElementInfo describes the DOM element at a grid position.
+// Rect represents a bounding box
+type Rect struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+// ElementInfo describes a DOM element found during crawling
 type ElementInfo struct {
-	Tag       string            `json:"tag"`
-	Text      string            `json:"text"`
-	Attrs     map[string]string `json:"attrs,omitempty"`
-	GridCells []string          `json:"grid_cells,omitempty"`
+	Tag         string            `json:"tag"`
+	Text        string            `json:"text"`
+	Attrs       map[string]string `json:"attrs"`
+	BoundingBox *Rect             `json:"bounding_box,omitempty"`
+	GridCells   []string          `json:"grid_cells"`
 }
 
-// ActionEntry is a single logged crawler action with full metadata.
-type ActionEntry struct {
-	ID           string            `json:"id"`
-	Timestamp    time.Time         `json:"timestamp"`
-	Action       string            `json:"action"`
-	GridCell     string            `json:"grid_cell,omitempty"`
-	PixelX       int               `json:"pixel_x,omitempty"`
-	PixelY       int               `json:"pixel_y,omitempty"`
-	URL          string            `json:"url"`
-	Input        string            `json:"input,omitempty"`
-	ElementTag   string            `json:"element_tag,omitempty"`
-	ElementText  string            `json:"element_text,omitempty"`
-	ElementAttrs map[string]string `json:"element_attrs,omitempty"`
-	Success      bool              `json:"success"`
-	Error        string            `json:"error,omitempty"`
-	DurationMs   int64             `json:"duration_ms"`
-	PageTitle    string            `json:"page_title,omitempty"`
+// ClickResult is returned from Click() with info about what was clicked
+type ClickResult struct {
+	Element    *ElementInfo `json:"element"`
+	BeforeShot string       `json:"before_shot,omitempty"`
+	AfterShot  string       `json:"after_shot,omitempty"`
+	GridCell   string       `json:"grid_cell"`
+	PixelX     int          `json:"pixel_x"`
+	PixelY     int          `json:"pixel_y"`
+	Success    bool         `json:"success"`
 }
 
-// SessionInfo is metadata about a crawler session for listing.
-type SessionInfo struct {
-	SessionID  string        `json:"session_id"`
-	Status     CrawlerStatus `json:"status"`
-	CurrentURL string        `json:"current_url"`
-	Grid       *Grid         `json:"grid"`
-	ActionCount int          `json:"action_count"`
-	CreatedAt  time.Time     `json:"created_at"`
+// NewCrawlEvent creates a properly timestamped AgentEvent with crawl data
+func NewCrawlEvent(sessionID string, eventType agent.EventType, summary string, detail map[string]any) agent.AgentEvent {
+	return agent.AgentEvent{
+		ID:        "",
+		SessionID: sessionID,
+		Type:      eventType,
+		Summary:   summary,
+		Detail:    detail,
+		Timestamp: time.Now(),
+	}
 }

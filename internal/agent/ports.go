@@ -298,6 +298,13 @@ const (
 	EventMemoryEnrich    EventType = "memory_enrich"
 	EventStallDetected   EventType = "stall_detected"
 	EventStallRecovered  EventType = "stall_recovered"
+
+	// Crawl event types — emitted by internal/crawler/ module
+	EventCrawlScreenshot EventType = "crawl_screenshot"
+	EventCrawlAction     EventType = "crawl_action"
+	EventCrawlStatus     EventType = "crawl_status"
+	EventCrawlError      EventType = "crawl_error"
+	EventCrawlGridUpdate EventType = "crawl_grid_update"
 )
 
 // AgentEvent is a structured event emitted by Cortex as it works.

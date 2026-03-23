@@ -64,7 +64,7 @@ func New(db *pgxpool.Pool, logger *slog.Logger) *Server {
 		logger:          logger,
 		mux:             http.NewServeMux(),
 		hub:             NewHub(),
-		crawlerSessions: crawler.NewSessionManager(),
+		crawlerSessions: crawler.NewSessionManager(nil), // eventBus set via SetEventBus()
 	}
 	s.routes()
 	return s
@@ -236,15 +236,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/events/", s.handleEventBusSSE)
 
 	// Hawkeye — Visual Crawler.
-	s.mux.HandleFunc("/api/crawler/start", s.handleCrawlerStart)
-	s.mux.HandleFunc("/api/crawler/navigate", s.handleCrawlerNavigate)
-	s.mux.HandleFunc("/api/crawler/click", s.handleCrawlerClick)
-	s.mux.HandleFunc("/api/crawler/type", s.handleCrawlerType)
-	s.mux.HandleFunc("/api/crawler/scroll", s.handleCrawlerScroll)
-	s.mux.HandleFunc("/api/crawler/screenshot", s.handleCrawlerScreenshot)
-	s.mux.HandleFunc("/api/crawler/log", s.handleCrawlerLog)
-	s.mux.HandleFunc("/api/crawler/stop", s.handleCrawlerStop)
-	s.mux.HandleFunc("/api/crawler/sessions", s.handleCrawlerSessions)
+	s.mux.HandleFunc("/api/crawler/start", s.handleStartSession)
+	s.mux.HandleFunc("/api/crawler/navigate", s.handleNavigate)
+	s.mux.HandleFunc("/api/crawler/click", s.handleClick)
+	s.mux.HandleFunc("/api/crawler/type", s.handleType)
+	s.mux.HandleFunc("/api/crawler/scroll", s.handleScroll)
+	s.mux.HandleFunc("/api/crawler/screenshot", s.handleGetScreenshot)
+	s.mux.HandleFunc("/api/crawler/elements", s.handleGetElements)
+	s.mux.HandleFunc("/api/crawler/log", s.handleGetLog)
+	s.mux.HandleFunc("/api/crawler/stop", s.handleStopSession)
+	s.mux.HandleFunc("/api/crawler/sessions", s.handleListSessions)
 
 	// Sprint 20 — Persistent Claude Chat.
 	s.mux.HandleFunc("/api/claude/chat", s.handleClaudeChatAPI)

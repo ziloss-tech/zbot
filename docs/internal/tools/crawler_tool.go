@@ -2,24 +2,16 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"zbot/internal/crawler"
+	"github.com/ziloss-tech/zbot/internal/agent"
+	"github.com/ziloss-tech/zbot/internal/crawler"
 )
 
 // CrawlerTool implements the Tool interface for web crawling
 type CrawlerTool struct {
 	sessions *crawler.SessionManager
-}
-
-// Tool interface (matching ZBOT's existing pattern)
-type Tool interface {
-	Name() string
-	Description() string
-	InputSchema() json.RawMessage
-	Execute(ctx context.Context, input json.RawMessage) (string, error)
 }
 
 // NewCrawlerTool creates a new CrawlerTool instance
@@ -34,94 +26,161 @@ func (t *CrawlerTool) Name() string {
 	return "web_crawl"
 }
 
-// Description returns the tool description
-func (t *CrawlerTool) Description() string {
-	return "Browse the web visually. Navigate to URLs, click elements by grid coordinate, type text, and scroll. Every action is logged with screenshots. Use the 'elements' action to see all clickable elements with their grid positions."
-}
-
-// InputSchema returns the JSON schema for tool input
-func (t *CrawlerTool) InputSchema() json.RawMessage {
-	schema := `{
-		"type": "object",
-		"properties": {
-			"action": {
-				"type": "string",
-				"enum": ["navigate", "screenshot", "click", "type", "scroll", "read", "elements", "start", "stop"],
-				"description": "The action to perform"
+// Definition returns the tool definition matching agent.Tool interface
+func (t *CrawlerTool) Definition() agent.ToolDefinition {
+	return agent.ToolDefinition{
+		Name:        "web_crawl",
+		Description: "Browse the web visually. Navigate to URLs, click elements by grid coordinate, type text, and scroll. Every action is logged with screenshots. Use the 'elements' action to see all clickable elements with their grid positions.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"action": map[string]any{
+					"type": "string",
+					"enum": []string{"navigate", "screenshot", "click", "type", "scroll", "read", "elements", "start", "stop"},
+					"description": "The action to perform",
+				},
+				"url": map[string]any{
+					"type": "string",
+					"description": "URL to navigate to (for 'navigate' action)",
+				},
+				"grid": map[string]any{
+					"type": "string",
+					"description": "Grid cell to click (for 'click' action), e.g. 'C7'",
+				},
+				"text": map[string]any{
+					"type": "string",
+					"description": "Text to type (for 'type' action)",
+				},
+				"direction": map[string]any{
+					"type": "string",
+					"enum": []string{"up", "down", "left", "right"},
+					"description": "Scroll direction (for 'scroll' action)",
+				},
+				"amount": map[string]any{
+					"type": "integer",
+					"description": "Scroll amount in units (for 'scroll' action)",
+				},
+				"session_id": map[string]any{
+					"type": "string",
+					"description": "Session ID (optional, uses most recent session if not provided)",
+				},
 			},
-			"url": {
-				"type": "string",
-				"description": "URL to navigate to (for 'navigate' action)"
-			},
-			"grid": {
-				"type": "string",
-				"description": "Grid cell to click (for 'click' action), e.g. 'C7'"
-			},
-			"text": {
-				"type": "string",
-				"description": "Text to type (for 'type' action)"
-			},
-			"direction": {
-				"type": "string",
-				"enum": ["up", "down", "left", "right"],
-				"description": "Scroll direction (for 'scroll' action)"
-			},
-			"amount": {
-				"type": "integer",
-				"description": "Scroll amount in units (for 'scroll' action)"
-			},
-			"session_id": {
-				"type": "string",
-				"description": "Session ID (optional, uses most recent session if not provided)"
-			}
+			"required": []string{"action"},
 		},
-		"required": ["action"]
-	}`
-	return json.RawMessage(schema)
+	}
 }
 
 // Execute processes tool input and performs the requested action
-func (t *CrawlerTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-	// Parse input
-	var params struct {
-		Action    string `json:"action"`
-		URL       string `json:"url,omitempty"`
-		Grid      string `json:"grid,omitempty"`
-		Text      string `json:"text,omitempty"`
-		Direction string `json:"direction,omitempty"`
-		Amount    int    `json:"amount,omitempty"`
-		SessionID string `json:"session_id,omitempty"`
+func (t *CrawlerTool) Execute(ctx context.Context, input map[string]any) (*agent.ToolResult, error) {
+	// Extract action from input
+	actionRaw, ok := input["action"]
+	if !ok {
+		return &agent.ToolResult{
+			Content: "",
+			IsError: true,
+		}, fmt.Errorf("action is required")
 	}
 
-	if err := json.Unmarshal(input, &params); err != nil {
-		return "", fmt.Errorf("failed to parse input: %w", err)
+	action, ok := actionRaw.(string)
+	if !ok {
+		return &agent.ToolResult{
+			Content: "",
+			IsError: true,
+		}, fmt.Errorf("action must be a string")
+	}
+
+	// Extract optional parameters
+	var params struct {
+		Action    string
+		URL       string
+		Grid      string
+		Text      string
+		Direction string
+		Amount    int
+		SessionID string
+	}
+
+	params.Action = action
+	if url, ok := input["url"].(string); ok {
+		params.URL = url
+	}
+	if grid, ok := input["grid"].(string); ok {
+		params.Grid = grid
+	}
+	if text, ok := input["text"].(string); ok {
+		params.Text = text
+	}
+	if direction, ok := input["direction"].(string); ok {
+		params.Direction = direction
+	}
+	if amount, ok := input["amount"].(float64); ok {
+		params.Amount = int(amount)
+	}
+	if sessionID, ok := input["session_id"].(string); ok {
+		params.SessionID = sessionID
 	}
 
 	// Validate action
-	action := strings.ToLower(strings.TrimSpace(params.Action))
+	action = strings.ToLower(strings.TrimSpace(params.Action))
 
 	// Route to appropriate action handler
 	switch action {
 	case "start":
-		return t.handleStart()
+		content, err := t.handleStart()
+		if err != nil {
+			return &agent.ToolResult{Content: "", IsError: true}, err
+		}
+		return &agent.ToolResult{Content: content, IsError: false}, nil
 	case "navigate":
-		return t.handleNavigate(params.URL, params.SessionID)
+		content, err := t.handleNavigate(params.URL, params.SessionID)
+		if err != nil {
+			return &agent.ToolResult{Content: "", IsError: true}, err
+		}
+		return &agent.ToolResult{Content: content, IsError: false}, nil
 	case "screenshot":
-		return t.handleScreenshot(params.SessionID)
+		content, err := t.handleScreenshot(params.SessionID)
+		if err != nil {
+			return &agent.ToolResult{Content: "", IsError: true}, err
+		}
+		return &agent.ToolResult{Content: content, IsError: false}, nil
 	case "click":
-		return t.handleClick(params.Grid, params.SessionID)
+		content, err := t.handleClick(params.Grid, params.SessionID)
+		if err != nil {
+			return &agent.ToolResult{Content: "", IsError: true}, err
+		}
+		return &agent.ToolResult{Content: content, IsError: false}, nil
 	case "type":
-		return t.handleType(params.Text, params.SessionID)
+		content, err := t.handleType(params.Text, params.SessionID)
+		if err != nil {
+			return &agent.ToolResult{Content: "", IsError: true}, err
+		}
+		return &agent.ToolResult{Content: content, IsError: false}, nil
 	case "scroll":
-		return t.handleScroll(params.Direction, params.Amount, params.SessionID)
+		content, err := t.handleScroll(params.Direction, params.Amount, params.SessionID)
+		if err != nil {
+			return &agent.ToolResult{Content: "", IsError: true}, err
+		}
+		return &agent.ToolResult{Content: content, IsError: false}, nil
 	case "read":
-		return t.handleRead(params.SessionID)
+		content, err := t.handleRead(params.SessionID)
+		if err != nil {
+			return &agent.ToolResult{Content: "", IsError: true}, err
+		}
+		return &agent.ToolResult{Content: content, IsError: false}, nil
 	case "elements":
-		return t.handleElements(params.SessionID)
+		content, err := t.handleElements(params.SessionID)
+		if err != nil {
+			return &agent.ToolResult{Content: "", IsError: true}, err
+		}
+		return &agent.ToolResult{Content: content, IsError: false}, nil
 	case "stop":
-		return t.handleStop(params.SessionID)
+		content, err := t.handleStop(params.SessionID)
+		if err != nil {
+			return &agent.ToolResult{Content: "", IsError: true}, err
+		}
+		return &agent.ToolResult{Content: content, IsError: false}, nil
 	default:
-		return "", fmt.Errorf("unknown action: %s", action)
+		return &agent.ToolResult{Content: "", IsError: true}, fmt.Errorf("unknown action: %s", action)
 	}
 }
 

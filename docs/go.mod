@@ -1,4 +1,4 @@
-module zbot
+module github.com/ziloss-tech/zbot
 
 go 1.22.5
 

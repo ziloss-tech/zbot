@@ -6,57 +6,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"zbot/internal/crawler"
+	"github.com/ziloss-tech/zbot/internal/crawler"
 )
-
-// CrawlerHandler handles HTTP requests for crawler operations
-type CrawlerHandler struct {
-	sessions *crawler.SessionManager
-}
-
-// NewCrawlerHandler creates a new CrawlerHandler with the given SessionManager
-func NewCrawlerHandler(sessions *crawler.SessionManager) *CrawlerHandler {
-	return &CrawlerHandler{
-		sessions: sessions,
-	}
-}
-
-// RegisterRoutes registers all crawler API routes on the given mux
-func (h *CrawlerHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/crawler/start", h.corsMiddleware(h.handleStartSession))
-	mux.HandleFunc("POST /api/crawler/navigate", h.corsMiddleware(h.handleNavigate))
-	mux.HandleFunc("POST /api/crawler/click", h.corsMiddleware(h.handleClick))
-	mux.HandleFunc("POST /api/crawler/type", h.corsMiddleware(h.handleType))
-	mux.HandleFunc("POST /api/crawler/scroll", h.corsMiddleware(h.handleScroll))
-	mux.HandleFunc("GET /api/crawler/screenshot", h.corsMiddleware(h.handleGetScreenshot))
-	mux.HandleFunc("GET /api/crawler/elements", h.corsMiddleware(h.handleGetElements))
-	mux.HandleFunc("GET /api/crawler/log", h.corsMiddleware(h.handleGetLog))
-	mux.HandleFunc("POST /api/crawler/stop", h.corsMiddleware(h.handleStopSession))
-	mux.HandleFunc("GET /api/crawler/sessions", h.corsMiddleware(h.handleListSessions))
-	mux.HandleFunc("OPTIONS /api/crawler/", h.corsMiddleware(h.handleOptions))
-}
-
-// corsMiddleware adds CORS headers and handles OPTIONS requests
-func (h *CrawlerHandler) corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Content-Type", "application/json")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		next(w, r)
-	}
-}
-
-// handleOptions handles OPTIONS preflight requests
-func (h *CrawlerHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-}
 
 // StartSessionRequest represents the request body for starting a session
 type StartSessionRequest struct {
@@ -78,7 +29,7 @@ type StartSessionResponse struct {
 }
 
 // handleStartSession handles POST /api/crawler/start
-func (h *CrawlerHandler) handleStartSession(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 	var req StartSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -95,14 +46,14 @@ func (h *CrawlerHandler) handleStartSession(w http.ResponseWriter, r *http.Reque
 		Height: req.ViewportHeight,
 	}
 
-	sessionID, err := h.sessions.StartSession(viewport)
+	sessionID, err := s.crawlerSessions.StartSession(viewport)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
 
 	// Get the crawler to access grid info
-	crawlerInstance, err := h.sessions.GetSession(sessionID)
+	crawlerInstance, err := s.crawlerSessions.GetSession(sessionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get session")
 		return
@@ -137,7 +88,7 @@ type NavigateResponse struct {
 }
 
 // handleNavigate handles POST /api/crawler/navigate
-func (h *CrawlerHandler) handleNavigate(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleNavigate(w http.ResponseWriter, r *http.Request) {
 	var req NavigateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -149,7 +100,7 @@ func (h *CrawlerHandler) handleNavigate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	crawlerInstance, err := h.sessions.GetSession(req.SessionID)
+	crawlerInstance, err := s.crawlerSessions.GetSession(req.SessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
@@ -192,7 +143,7 @@ type ClickResponse struct {
 }
 
 // handleClick handles POST /api/crawler/click
-func (h *CrawlerHandler) handleClick(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleClick(w http.ResponseWriter, r *http.Request) {
 	var req ClickRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -204,7 +155,7 @@ func (h *CrawlerHandler) handleClick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	crawlerInstance, err := h.sessions.GetSession(req.SessionID)
+	crawlerInstance, err := s.crawlerSessions.GetSession(req.SessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
@@ -243,7 +194,7 @@ type TypeResponse struct {
 }
 
 // handleType handles POST /api/crawler/type
-func (h *CrawlerHandler) handleType(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleType(w http.ResponseWriter, r *http.Request) {
 	var req TypeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -255,7 +206,7 @@ func (h *CrawlerHandler) handleType(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	crawlerInstance, err := h.sessions.GetSession(req.SessionID)
+	crawlerInstance, err := s.crawlerSessions.GetSession(req.SessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
@@ -287,7 +238,7 @@ type ScrollResponse struct {
 }
 
 // handleScroll handles POST /api/crawler/scroll
-func (h *CrawlerHandler) handleScroll(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleScroll(w http.ResponseWriter, r *http.Request) {
 	var req ScrollRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -299,7 +250,7 @@ func (h *CrawlerHandler) handleScroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	crawlerInstance, err := h.sessions.GetSession(req.SessionID)
+	crawlerInstance, err := s.crawlerSessions.GetSession(req.SessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
@@ -332,7 +283,7 @@ type ScreenshotResponse struct {
 }
 
 // handleGetScreenshot handles GET /api/crawler/screenshot
-func (h *CrawlerHandler) handleGetScreenshot(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetScreenshot(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session_id")
 	gridStr := r.URL.Query().Get("grid")
 	includeGrid := gridStr == "true"
@@ -342,7 +293,7 @@ func (h *CrawlerHandler) handleGetScreenshot(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	crawlerInstance, err := h.sessions.GetSession(sessionID)
+	crawlerInstance, err := s.crawlerSessions.GetSession(sessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
@@ -380,7 +331,7 @@ type ElementsResponse struct {
 }
 
 // handleGetElements handles GET /api/crawler/elements
-func (h *CrawlerHandler) handleGetElements(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetElements(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session_id")
 
 	if sessionID == "" {
@@ -388,7 +339,7 @@ func (h *CrawlerHandler) handleGetElements(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	crawlerInstance, err := h.sessions.GetSession(sessionID)
+	crawlerInstance, err := s.crawlerSessions.GetSession(sessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
@@ -436,7 +387,7 @@ type ActionEntry struct {
 }
 
 // handleGetLog handles GET /api/crawler/log
-func (h *CrawlerHandler) handleGetLog(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetLog(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session_id")
 	tailStr := r.URL.Query().Get("tail")
 
@@ -452,7 +403,7 @@ func (h *CrawlerHandler) handleGetLog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	crawlerInstance, err := h.sessions.GetSession(sessionID)
+	crawlerInstance, err := s.crawlerSessions.GetSession(sessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
@@ -476,7 +427,7 @@ type StopSessionResponse struct {
 }
 
 // handleStopSession handles POST /api/crawler/stop
-func (h *CrawlerHandler) handleStopSession(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 	var req StopSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -488,7 +439,7 @@ func (h *CrawlerHandler) handleStopSession(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := h.sessions.StopSession(req.SessionID); err != nil {
+	if err := s.crawlerSessions.StopSession(req.SessionID); err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
@@ -516,8 +467,8 @@ type ListSessionsResponse struct {
 }
 
 // handleListSessions handles GET /api/crawler/sessions
-func (h *CrawlerHandler) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	sessions := h.sessions.ListSessions()
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	sessions := s.crawlerSessions.ListSessions()
 
 	sessionInfos := make([]SessionInfo, len(sessions))
 	for i, sess := range sessions {

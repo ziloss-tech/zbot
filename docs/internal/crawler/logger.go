@@ -1,10 +1,13 @@
 package crawler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/ziloss-tech/zbot/internal/agent"
 )
 
 // ActionEntry represents a single logged crawler action
@@ -31,14 +34,14 @@ type ActionEntry struct {
 type ActionLogger struct {
 	sessionID     string
 	entries       []ActionEntry
-	eventBus      EventBus
+	eventBus      agent.EventBus
 	mu            sync.RWMutex
 	entryCounter  int
 	sessionStart  time.Time
 }
 
 // NewActionLogger creates a new action logger for a session
-func NewActionLogger(sessionID string, eventBus EventBus) *ActionLogger {
+func NewActionLogger(sessionID string, eventBus agent.EventBus) *ActionLogger {
 	return &ActionLogger{
 		sessionID:    sessionID,
 		entries:      make([]ActionEntry, 0),
@@ -75,18 +78,23 @@ func (l *ActionLogger) Log(entry ActionEntry) {
 
 	// Emit event through event bus
 	if l.eventBus != nil {
-		event := CrawlEvent{
-			SessionID:  l.sessionID,
-			Type:       EventCrawlAction,
-			Action:     entry.Action,
-			GridCell:   entry.GridCell,
-			URL:        entry.URL,
-			Screenshot: screenshotForEvent,
-			Status:     StatusActing,
-			Timestamp:  entry.Timestamp,
-			PageTitle:  entry.PageTitle,
-		}
-		l.eventBus.Publish(l.sessionID, event)
+		event := NewCrawlEvent(l.sessionID, agent.EventType("crawl_action"), entry.Action, map[string]any{
+			"action":          entry.Action,
+			"grid_cell":       entry.GridCell,
+			"url":             entry.URL,
+			"screenshot":      screenshotForEvent,
+			"status":          "acting",
+			"page_title":      entry.PageTitle,
+			"timestamp":       entry.Timestamp,
+			"element_tag":     entry.ElementTag,
+			"element_text":    entry.ElementText,
+			"element_attrs":   entry.ElementAttrs,
+			"pixel_x":         entry.PixelX,
+			"pixel_y":         entry.PixelY,
+			"input":           entry.Input,
+			"duration_ms":     entry.DurationMs,
+		})
+		l.eventBus.Emit(context.Background(), event)
 	}
 }
 

@@ -5,12 +5,15 @@ import { ThalamusPane } from './ThalamusPane'
 import { WorkflowHistory } from './WorkflowHistory'
 import { FileTreePane } from './FileTreePane'
 import { CodePreviewPane } from './CodePreviewPane'
+import { BrowserPane } from './BrowserPane'
+import { CrawlLogPane } from './CrawlLogPane'
+import useCrawler from '../hooks/useCrawler'
 import type { WorkflowState } from '../lib/types'
 import type { AgentEvent } from '../hooks/useEventBus'
 
 // ─── Pane Registry ──────────────────────────────────────────────────────────
 
-export type PaneType = 'chat' | 'cortex' | 'thalamus' | 'tasks' | 'history' | 'files' | 'code_preview'
+export type PaneType = 'chat' | 'cortex' | 'thalamus' | 'tasks' | 'history' | 'files' | 'code_preview' | 'browser' | 'crawl_log'
 
 interface PaneConfig {
   id: string
@@ -27,6 +30,8 @@ const PANE_TEMPLATES: Record<PaneType, Omit<PaneConfig, 'id'>> = {
   history:   { type: 'history',   label: 'History',   icon: '📜' },
   files:        { type: 'files',        label: 'Files',   icon: '📁' },
   code_preview: { type: 'code_preview', label: 'Code',    icon: '📄' },
+  browser:      { type: 'browser',      label: 'Browser', icon: '🌐' },
+  crawl_log:    { type: 'crawl_log',    label: 'Crawl Log', icon: '📋' },
 }
 
 let paneCounter = 0
@@ -175,6 +180,8 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile, eventBus }
   const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const fileEventsSeen = useRef(false)
+  const crawlerState = useCrawler()
+  const [crawlGridVisible, setCrawlGridVisible] = useState(true)
 
   // ─── Auto-split: open Thalamus when Cortex starts working ───────────────
   const prevPhaseRef = useRef(false)
@@ -277,6 +284,10 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile, eventBus }
         return <FileTreePane onClose={() => removePane(pane.id)} onSelectFile={(path) => setPreviewFilePath(path)} />
       case 'code_preview':
         return <CodePreviewPane filePath={previewFilePath} onClose={() => removePane(pane.id)} />
+      case 'browser':
+        return <BrowserPane sessionId={crawlerState.sessionId} screenshot={crawlerState.screenshot} currentURL={crawlerState.currentURL} status={crawlerState.status} gridConfig={crawlerState.gridConfig as any} gridVisible={crawlGridVisible} onNavigate={async (url) => { if (!crawlerState.sessionId) { await crawlerState.startCrawl(url); } else { await crawlerState.navigate(url); } }} onGridClick={(cell) => crawlerState.click(cell)} onToggleGrid={() => setCrawlGridVisible(!crawlGridVisible)} onRefresh={() => crawlerState.navigate(crawlerState.currentURL)} />
+      case 'crawl_log':
+        return <CrawlLogPane entries={crawlerState.actionLog} />
       default:
         return null
     }

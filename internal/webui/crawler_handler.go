@@ -2,269 +2,510 @@ package webui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 
-	"github.com/ziloss-tech/zbot/internal/agent"
 	"github.com/ziloss-tech/zbot/internal/crawler"
 )
 
-// ─── Request/Response Types ─────────────────────────────────────────────────
-
-type crawlerStartReq struct {
-	ViewportW int `json:"viewport_width"`
-	ViewportH int `json:"viewport_height"`
-	CellSize  int `json:"cell_size"`
+// StartSessionRequest represents the request body for starting a session
+type StartSessionRequest struct {
+	ViewportWidth  int `json:"viewport_width"`
+	ViewportHeight int `json:"viewport_height"`
 }
 
-type crawlerActionReq struct {
+// StartSessionResponse represents the response from starting a session
+type StartSessionResponse struct {
 	SessionID string `json:"session_id"`
-	URL       string `json:"url,omitempty"`
-	GridCell  string `json:"grid_cell,omitempty"`
-	Text      string `json:"text,omitempty"`
-	Direction string `json:"direction,omitempty"`
-	Amount    int    `json:"amount,omitempty"`
+	Grid      struct {
+		Rows      int `json:"rows"`
+		Cols      int `json:"cols"`
+		CellW     int `json:"cell_w"`
+		CellH     int `json:"cell_h"`
+		ViewportW int `json:"viewport_w"`
+		ViewportH int `json:"viewport_h"`
+	} `json:"grid"`
 }
 
-// ─── Handlers ───────────────────────────────────────────────────────────────
-
-func (s *Server) handleCrawlerStart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	var req crawlerStartReq
+// handleStartSession handles POST /api/crawler/start
+func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
+	var req StartSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.ViewportW <= 0 {
-		req.ViewportW = 1280
-	}
-	if req.ViewportH <= 0 {
-		req.ViewportH = 960
-	}
-	if req.CellSize <= 0 {
-		req.CellSize = 64
+
+	if req.ViewportWidth <= 0 || req.ViewportHeight <= 0 {
+		writeError(w, http.StatusBadRequest, "viewport dimensions must be positive")
+		return
 	}
 
-	// Wire crawl events into the ZBOT event bus.
-	var emitter crawler.EventEmitter
-	if s.eventBus != nil {
-		emitter = func(ev crawler.CrawlEvent) {
-			s.eventBus.Emit(r.Context(), agentEventFromCrawl(ev))
+	viewport := crawler.ViewportSize{
+		Width:  req.ViewportWidth,
+		Height: req.ViewportHeight,
+	}
+
+	sessionID, err := s.crawlerSessions.StartSession(viewport)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
+
+	// Get the crawler to access grid info
+	crawlerInstance, err := s.crawlerSessions.GetSession(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get session")
+		return
+	}
+
+	grid := crawlerInstance.Grid()
+	resp := StartSessionResponse{
+		SessionID: sessionID,
+	}
+	resp.Grid.Rows = grid.Rows
+	resp.Grid.Cols = grid.Cols
+	resp.Grid.CellW = grid.CellWidth
+	resp.Grid.CellH = grid.CellHeight
+	resp.Grid.ViewportW = grid.ViewportW
+	resp.Grid.ViewportH = grid.ViewportH
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// NavigateRequest represents the request body for navigating
+type NavigateRequest struct {
+	SessionID string `json:"session_id"`
+	URL       string `json:"url"`
+}
+
+// NavigateResponse represents the response from navigating
+type NavigateResponse struct {
+	Success    bool   `json:"success"`
+	PageTitle  string `json:"page_title"`
+	URL        string `json:"url"`
+	Screenshot string `json:"screenshot"`
+}
+
+// handleNavigate handles POST /api/crawler/navigate
+func (s *Server) handleNavigate(w http.ResponseWriter, r *http.Request) {
+	var req NavigateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.SessionID == "" || req.URL == "" {
+		writeError(w, http.StatusBadRequest, "session_id and url are required")
+		return
+	}
+
+	crawlerInstance, err := s.crawlerSessions.GetSession(req.SessionID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	if err := crawlerInstance.Navigate(req.URL); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to navigate")
+		return
+	}
+
+	// Get page title and screenshot after navigation
+	pageTitle := crawlerInstance.PageTitle()
+	screenshot, err := crawlerInstance.Screenshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get screenshot")
+		return
+	}
+
+	resp := NavigateResponse{
+		Success:    true,
+		PageTitle:  pageTitle,
+		URL:        req.URL,
+		Screenshot: screenshot,
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ClickRequest represents the request body for clicking
+type ClickRequest struct {
+	SessionID string `json:"session_id"`
+	GridCell  string `json:"grid_cell"`
+}
+
+// ClickResponse represents the response from clicking
+type ClickResponse struct {
+	Success    bool   `json:"success"`
+	Element    map[string]interface{} `json:"element"`
+	Screenshot string `json:"screenshot"`
+}
+
+// handleClick handles POST /api/crawler/click
+func (s *Server) handleClick(w http.ResponseWriter, r *http.Request) {
+	var req ClickRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.SessionID == "" || req.GridCell == "" {
+		writeError(w, http.StatusBadRequest, "session_id and grid_cell are required")
+		return
+	}
+
+	crawlerInstance, err := s.crawlerSessions.GetSession(req.SessionID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	result, err := crawlerInstance.Click(req.GridCell)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to click element")
+		return
+	}
+
+	// Convert ElementInfo to map for JSON response
+	elementMap := map[string]interface{}{
+		"tag":  result.Element.Tag,
+		"text": result.Element.Text,
+	}
+
+	resp := ClickResponse{
+		Success:    true,
+		Element:    elementMap,
+		Screenshot: result.AfterShot,
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// TypeRequest represents the request body for typing
+type TypeRequest struct {
+	SessionID string `json:"session_id"`
+	Text      string `json:"text"`
+}
+
+// TypeResponse represents the response from typing
+type TypeResponse struct {
+	Success bool `json:"success"`
+}
+
+// handleType handles POST /api/crawler/type
+func (s *Server) handleType(w http.ResponseWriter, r *http.Request) {
+	var req TypeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.SessionID == "" {
+		writeError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+
+	crawlerInstance, err := s.crawlerSessions.GetSession(req.SessionID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	if err := crawlerInstance.Type(req.Text); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to type text")
+		return
+	}
+
+	resp := TypeResponse{
+		Success: true,
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ScrollRequest represents the request body for scrolling
+type ScrollRequest struct {
+	SessionID string `json:"session_id"`
+	Direction string `json:"direction"`
+	Amount    int    `json:"amount"`
+}
+
+// ScrollResponse represents the response from scrolling
+type ScrollResponse struct {
+	Success    bool   `json:"success"`
+	Screenshot string `json:"screenshot"`
+}
+
+// handleScroll handles POST /api/crawler/scroll
+func (s *Server) handleScroll(w http.ResponseWriter, r *http.Request) {
+	var req ScrollRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.SessionID == "" || req.Direction == "" {
+		writeError(w, http.StatusBadRequest, "session_id and direction are required")
+		return
+	}
+
+	crawlerInstance, err := s.crawlerSessions.GetSession(req.SessionID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	if err := crawlerInstance.Scroll(req.Direction, req.Amount); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to scroll")
+		return
+	}
+
+	// Get screenshot after scroll
+	screenshot, err := crawlerInstance.Screenshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get screenshot")
+		return
+	}
+
+	resp := ScrollResponse{
+		Success:    true,
+		Screenshot: screenshot,
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ScreenshotResponse represents the response from getting a screenshot
+type ScreenshotResponse struct {
+	Screenshot string `json:"screenshot"`
+	Grid       bool   `json:"grid"`
+}
+
+// handleGetScreenshot handles GET /api/crawler/screenshot
+func (s *Server) handleGetScreenshot(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
+	gridStr := r.URL.Query().Get("grid")
+	includeGrid := gridStr == "true"
+
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+
+	crawlerInstance, err := s.crawlerSessions.GetSession(sessionID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	var screenshot string
+	if includeGrid {
+		ss, err := crawlerInstance.ScreenshotWithGrid()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to get screenshot with grid")
+			return
 		}
+		screenshot = ss
+	} else {
+		ss, err := crawlerInstance.Screenshot()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to get screenshot")
+			return
+		}
+		screenshot = ss
 	}
 
-	c, err := s.crawlerSessions.Start(req.ViewportW, req.ViewportH, req.CellSize, emitter)
+	resp := ScreenshotResponse{
+		Screenshot: screenshot,
+		Grid:       includeGrid,
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ElementsResponse represents the response from getting elements
+type ElementsResponse struct {
+	Elements  []map[string]interface{} `json:"elements"`
+	Formatted []string                 `json:"formatted"`
+}
+
+// handleGetElements handles GET /api/crawler/elements
+func (s *Server) handleGetElements(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
+
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+
+	crawlerInstance, err := s.crawlerSessions.GetSession(sessionID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{
-		"session_id": c.SessionID(),
-		"grid":       c.Grid(),
-	})
-}
 
-func (s *Server) handleCrawlerNavigate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	var req crawlerActionReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	c, err := s.crawlerSessions.Get(req.SessionID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	if err := c.Navigate(req.URL); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	shot, _ := c.ScreenshotJPEG()
-	json.NewEncoder(w).Encode(map[string]any{
-		"success":    true,
-		"url":        c.CurrentURL(),
-		"screenshot": shot,
-	})
-}
+	// Get grid to enumerate all cells and find elements
+	grid := crawlerInstance.Grid()
+	elements := make([]map[string]interface{}, 0)
+	formatted := make([]string, 0)
 
-func (s *Server) handleCrawlerClick(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	var req crawlerActionReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	c, err := s.crawlerSessions.Get(req.SessionID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	info, clickErr := c.Click(req.GridCell)
-	shot, _ := c.ScreenshotJPEG()
-	resp := map[string]any{
-		"success":    clickErr == nil,
-		"screenshot": shot,
-		"url":        c.CurrentURL(),
-	}
-	if info != nil {
-		resp["element"] = info
-	}
-	if clickErr != nil {
-		resp["error"] = clickErr.Error()
-	}
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *Server) handleCrawlerType(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	var req crawlerActionReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	c, err := s.crawlerSessions.Get(req.SessionID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	typeErr := c.Type(req.Text)
-	json.NewEncoder(w).Encode(map[string]any{
-		"success": typeErr == nil,
-	})
-}
-
-func (s *Server) handleCrawlerScroll(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	var req crawlerActionReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	c, err := s.crawlerSessions.Get(req.SessionID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	if req.Amount <= 0 {
-		req.Amount = 3
-	}
-	scrollErr := c.Scroll(req.Direction, req.Amount)
-	shot, _ := c.ScreenshotJPEG()
-	json.NewEncoder(w).Encode(map[string]any{
-		"success":    scrollErr == nil,
-		"screenshot": shot,
-	})
-}
-
-func (s *Server) handleCrawlerScreenshot(w http.ResponseWriter, r *http.Request) {
-	sid := r.URL.Query().Get("session_id")
-	c, err := s.crawlerSessions.Get(sid)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	shot, err := c.ScreenshotJPEG()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]any{"screenshot": shot})
-}
-
-func (s *Server) handleCrawlerLog(w http.ResponseWriter, r *http.Request) {
-	sid := r.URL.Query().Get("session_id")
-	c, err := s.crawlerSessions.Get(sid)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	n := 50
-	entries := c.Logger().Tail(n)
-	json.NewEncoder(w).Encode(entries)
-}
-
-func (s *Server) handleCrawlerStop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	var req crawlerActionReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := s.crawlerSessions.Stop(req.SessionID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]any{"stopped": true})
-}
-
-func (s *Server) handleCrawlerSessions(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(s.crawlerSessions.List())
-}
-
-// agentEventFromCrawl converts a CrawlEvent to an AgentEvent for the event bus.
-func agentEventFromCrawl(ev crawler.CrawlEvent) agent.AgentEvent {
-	detail := map[string]any{
-		"action":     ev.Action,
-		"grid_cell":  ev.GridCell,
-		"url":        ev.URL,
-		"status":     string(ev.Status),
-		"duration_ms": ev.DurationMs,
-		"page_title": ev.PageTitle,
-	}
-	if ev.ElementInfo != nil {
-		detail["element_tag"] = ev.ElementInfo.Tag
-		detail["element_text"] = ev.ElementInfo.Text
-	}
-	if ev.Screenshot != "" {
-		detail["has_screenshot"] = true
-		// Don't put base64 in the event bus detail — too large.
-		// The frontend gets screenshots via SSE crawl_screenshot events.
-	}
-	return agent.AgentEvent{
-		SessionID: ev.SessionID,
-		Type:      agent.EventType(ev.Type),
-		Summary:   crawlSummary(ev),
-		Detail:    detail,
-		Timestamp: ev.Timestamp,
-	}
-}
-
-func crawlSummary(ev crawler.CrawlEvent) string {
-	switch ev.Action {
-	case "navigate":
-		return "Navigated to " + ev.URL
-	case "click":
-		tag := ""
-		if ev.ElementInfo != nil {
-			tag = " <" + ev.ElementInfo.Tag + ">"
-			if ev.ElementInfo.Text != "" {
-				tag += " \"" + ev.ElementInfo.Text + "\""
+	// Scan all grid cells for elements
+	cells := grid.AllCells()
+	for _, gridCell := range cells {
+		elemInfo, err := crawlerInstance.ElementAtGrid(gridCell.Label)
+		if err != nil {
+			continue
+		}
+		if elemInfo != nil && elemInfo.Tag != "unknown" && elemInfo.Tag != "" {
+			elemMap := map[string]interface{}{
+				"grid_cell": gridCell.Label,
+				"tag":       elemInfo.Tag,
+				"text":      elemInfo.Text,
 			}
+			if len(elemInfo.Attrs) > 0 {
+				elemMap["attrs"] = elemInfo.Attrs
+			}
+			elements = append(elements, elemMap)
+			formatted = append(formatted, fmt.Sprintf("%s: <%s> '%s'", gridCell.Label, elemInfo.Tag, elemInfo.Text))
 		}
-		return "Clicked " + ev.GridCell + tag
-	case "type":
-		return "Typed text"
-	case "scroll":
-		return "Scrolled page"
-	default:
-		return string(ev.Type)
 	}
+
+	resp := ElementsResponse{
+		Elements:  elements,
+		Formatted: formatted,
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ActionEntry represents a single action log entry
+type ActionEntry struct {
+	Timestamp string                 `json:"timestamp"`
+	Action    string                 `json:"action"`
+	Details   map[string]interface{} `json:"details"`
+}
+
+// handleGetLog handles GET /api/crawler/log
+func (s *Server) handleGetLog(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
+	tailStr := r.URL.Query().Get("tail")
+
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+
+	tail := 50
+	if tailStr != "" {
+		if t, err := strconv.Atoi(tailStr); err == nil && t > 0 {
+			tail = t
+		}
+	}
+
+	crawlerInstance, err := s.crawlerSessions.GetSession(sessionID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	// Get action log from logger
+	logger := crawlerInstance.Logger()
+	logEntries := logger.Tail(tail)
+
+	writeJSON(w, http.StatusOK, logEntries)
+}
+
+// StopSessionRequest represents the request body for stopping a session
+type StopSessionRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+// StopSessionResponse represents the response from stopping a session
+type StopSessionResponse struct {
+	Success bool `json:"success"`
+}
+
+// handleStopSession handles POST /api/crawler/stop
+func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
+	var req StopSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.SessionID == "" {
+		writeError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+
+	if err := s.crawlerSessions.StopSession(req.SessionID); err != nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	resp := StopSessionResponse{
+		Success: true,
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// SessionInfo represents information about a single session
+type SessionInfo struct {
+	SessionID    string `json:"session_id"`
+	CreatedAt    string `json:"created_at"`
+	CurrentURL   string `json:"current_url"`
+	ViewportW    int    `json:"viewport_w"`
+	ViewportH    int    `json:"viewport_h"`
+	ActionCount  int    `json:"action_count"`
+}
+
+// ListSessionsResponse represents the response from listing sessions
+type ListSessionsResponse struct {
+	Sessions []SessionInfo `json:"sessions"`
+}
+
+// handleListSessions handles GET /api/crawler/sessions
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	sessions := s.crawlerSessions.ListSessions()
+
+	sessionInfos := make([]SessionInfo, len(sessions))
+	for i, sess := range sessions {
+		sessionInfos[i] = SessionInfo{
+			SessionID:   sess.SessionID,
+			CreatedAt:   sess.CreatedAt.String(),
+			CurrentURL:  sess.CurrentURL,
+			ViewportW:   sess.Viewport.Width,
+			ViewportH:   sess.Viewport.Height,
+			ActionCount: sess.ActionCount,
+		}
+	}
+
+	resp := ListSessionsResponse{
+		Sessions: sessionInfos,
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ErrorResponse represents an error response
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
+
+// writeJSON writes a JSON response with the given status code and data
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(data)
+}
+
+// writeError writes a JSON error response with the given status code and message
+func writeError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(ErrorResponse{
+		Error: message,
+	})
 }
