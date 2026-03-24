@@ -38,6 +38,8 @@ import (
 	"github.com/ziloss-tech/zbot/internal/vault"
 	"github.com/ziloss-tech/zbot/internal/security"
 	"github.com/ziloss-tech/zbot/internal/tools"
+	"github.com/ziloss-tech/zbot/internal/crawler"
+	"github.com/ziloss-tech/zbot/internal/router"
 	"github.com/ziloss-tech/zbot/internal/webui"
 	"github.com/ziloss-tech/zbot/internal/workflow"
 )
@@ -351,6 +353,19 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		tools.NewAnalyzeImageTool(llmClient, workspaceRoot),
 		tools.NewPDFExtractTool(workspaceRoot),
 	)
+
+	// ── Hawkeye: Visual Crawler ─────────────────────────────────────────────
+	crawlerSessions := crawler.NewSessionManager(nil) // eventBus wired after creation below
+	crawlerTool := tools.NewCrawlerTool(crawlerSessions)
+	coreTools = append(coreTools, crawlerTool)
+	logger.Info("tool registered: web_crawl (Hawkeye visual crawler)")
+
+	// ── Benchmark Router ────────────────────────────────────────────────────
+	modelRouter := router.NewRouter(router.Preferences{
+		PreferAmerican: true,
+	})
+	_ = modelRouter // TODO: wire into agent model selection
+	logger.Info("model router initialized", "models", len(router.DefaultModels))
 
 	// ── Skills System (Sprint 7) ────────────────────────────────────────────
 	skillRegistry := skills.NewRegistry()
