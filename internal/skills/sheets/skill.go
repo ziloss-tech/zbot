@@ -19,7 +19,7 @@ type Skill struct {
 
 // NewSkill creates a Sheets skill using service account credentials JSON.
 func NewSkill(ctx context.Context, credentialsJSON string) (*Skill, error) {
-	svc, err := sheetsv4.NewService(ctx, option.WithCredentialsJSON([]byte(credentialsJSON))) //nolint:staticcheck // TODO: migrate to google.CredentialsFromJSON
+	svc, err := sheetsv4.NewService(ctx, option.WithCredentialsJSON([]byte(credentialsJSON))) //lint:ignore SA1019 TODO: migrate to google.CredentialsFromJSON
 	if err != nil {
 		return nil, fmt.Errorf("sheets: init service: %w", err)
 	}
