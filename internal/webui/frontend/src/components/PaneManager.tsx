@@ -13,7 +13,7 @@ import type { AgentEvent } from '../hooks/useEventBus'
 
 // ─── Pane Registry ──────────────────────────────────────────────────────────
 
-export type PaneType = 'chat' | 'cortex' | 'thalamus' | 'tasks' | 'history' | 'files' | 'code_preview' | 'browser' | 'crawl_log'
+export type PaneType = 'chat' | 'thalamus' | 'tasks' | 'history' | 'files' | 'code_preview' | 'browser' | 'crawl_log'
 
 interface PaneConfig {
   id: string
@@ -23,8 +23,7 @@ interface PaneConfig {
 }
 
 const PANE_TEMPLATES: Record<PaneType, Omit<PaneConfig, 'id'>> = {
-  chat:      { type: 'chat',      label: 'Chat',      icon: '💬' },
-  cortex:    { type: 'cortex',    label: 'Cortex',    icon: '🧠' },
+  chat:      { type: 'chat',      label: 'Cortex',    icon: '🧠' },
   thalamus:  { type: 'thalamus',  label: 'Auditor',   icon: '✅' },
   tasks:     { type: 'tasks',     label: 'Tasks',     icon: '📋' },
   history:   { type: 'history',   label: 'History',   icon: '📜' },
@@ -272,8 +271,6 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile, eventBus }
     switch (pane.type) {
       case 'chat':
         return <ChatPane workflowState={workflowState} eventBus={eventBus} />
-      case 'cortex':
-        return <ChatPane workflowState={workflowState} eventBus={eventBus} />
       case 'thalamus':
         return <ThalamusPane workflowState={workflowState} eventBus={eventBus} onClose={() => removePane(pane.id)} />
       case 'tasks':
@@ -313,7 +310,7 @@ export function PaneManager({ workflowState, onViewFile: _onViewFile, eventBus }
             {panes.length > 1 && (
               <button
                 onClick={() => removePane(pane.id)}
-                className="ml-0.5 font-mono text-[10px] text-white/15 hover:text-white/50 transition-colors opacity-0 group-hover:opacity-100"
+                className="ml-0.5 font-mono text-[10px] text-white/25 hover:text-red-400 transition-colors"
               >
                 ×
               </button>
