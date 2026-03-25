@@ -217,7 +217,7 @@ func (t *AuditWorkflowsTool) Execute(ctx context.Context, input map[string]any) 
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📋 GHL Workflow Audit Report\n"))
+	sb.WriteString("📋 GHL Workflow Audit Report\n")
 	sb.WriteString(fmt.Sprintf("Location: %s\n", loc))
 	sb.WriteString(fmt.Sprintf("Total workflows: %d (%d published, %d draft)\n", len(workflows), publishedCount, draftCount))
 	sb.WriteString(fmt.Sprintf("Findings: %d critical, %d warnings, %d info\n\n", criticals, warnings, infos))
@@ -332,7 +332,7 @@ func (t *AuditContactsTool) Execute(ctx context.Context, input map[string]any) (
 	total := resp.Meta.Total
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📊 GHL Contact Audit Report\n"))
+	sb.WriteString("📊 GHL Contact Audit Report\n")
 	sb.WriteString(fmt.Sprintf("Location: %s\n", loc))
 	sb.WriteString(fmt.Sprintf("Total contacts in location: %d\n", total))
 	sb.WriteString(fmt.Sprintf("Sampled: %d contacts\n\n", sampled))
@@ -342,18 +342,18 @@ func (t *AuditContactsTool) Execute(ctx context.Context, input map[string]any) (
 		dndPct = float64(dndCount) / float64(sampled) * 100
 	}
 
-	sb.WriteString(fmt.Sprintf("DND Status:\n"))
+	sb.WriteString("DND Status:\n")
 	sb.WriteString(fmt.Sprintf("  DND contacts: %d / %d (%.1f%%)\n", dndCount, sampled, dndPct))
 	if dndPct > 10 {
 		sb.WriteString(fmt.Sprintf("  ⚠️ HIGH DND RATE — %.1f%% of contacts are DND. Projected: ~%d of %d total.\n", dndPct, int(dndPct/100*float64(total)), total))
 	}
 
-	sb.WriteString(fmt.Sprintf("\nMissing Fields:\n"))
+	sb.WriteString("\nMissing Fields:\n")
 	sb.WriteString(fmt.Sprintf("  No email: %d (%.1f%%)\n", missingEmail, pct(missingEmail, sampled)))
 	sb.WriteString(fmt.Sprintf("  No phone: %d (%.1f%%)\n", missingPhone, pct(missingPhone, sampled)))
 	sb.WriteString(fmt.Sprintf("  No name: %d (%.1f%%)\n", missingName, pct(missingName, sampled)))
 
-	sb.WriteString(fmt.Sprintf("\nTop Tags (from sample):\n"))
+	sb.WriteString("\nTop Tags (from sample):\n")
 	type tagEntry struct {
 		Tag   string
 		Count int

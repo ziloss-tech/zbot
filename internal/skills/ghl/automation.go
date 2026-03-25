@@ -206,7 +206,7 @@ func (t *DNDReviewTool) phase1Analyze(ctx context.Context, loc string, input map
 	}
 
 	sb.WriteString(fmt.Sprintf("\nSnapshot ID: %s\n", snapshotID))
-	sb.WriteString(fmt.Sprintf("\n➡️ To proceed to Phase 2 (test 5 contacts), call:\n"))
+	sb.WriteString("\n➡️ To proceed to Phase 2 (test 5 contacts), call:\n")
 	sb.WriteString(fmt.Sprintf("   ghl_dnd_review phase=2 confirm=true snapshot_id=%s\n", snapshotID))
 
 	return &agent.ToolResult{Content: sb.String()}, nil

@@ -258,7 +258,7 @@ func (s *Server) handleMemoryAction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		return
 	}
-	http.Error(w, "method not allowed", 405)
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 }
 
 // ─── WORKFLOWS ───────────────────────────────────────────────────────────────

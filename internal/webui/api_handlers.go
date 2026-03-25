@@ -1344,10 +1344,6 @@ func (s *Server) handleScheduleActionAPI(w http.ResponseWriter, r *http.Request)
 		// Fire in background via the scheduler's handler.
 		go func() {
 			ctx := context.Background()
-			instruction := job.Goal
-			if instruction == "" {
-				instruction = job.Instruction
-			}
 			// Mark running.
 			_ = s.jobStore.UpdateStatus(ctx, id, "running")
 
@@ -1644,7 +1640,7 @@ func (s *Server) handleResearchCreateAPI(w http.ResponseWriter, r *http.Request)
 				preview = preview[:400] + "..."
 			}
 			msg += preview + "\n\n"
-			msg += fmt.Sprintf("<http://localhost:18790|View full report in ZBOT UI>")
+			msg += "<http://localhost:18790|View full report in ZBOT UI>"
 			if notifyErr := s.slackNotifier.Send(ctx, s.notifyChannelID, msg); notifyErr != nil {
 				s.logger.Error("research Slack notification failed", "err", notifyErr)
 			} else {

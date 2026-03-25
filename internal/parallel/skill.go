@@ -103,7 +103,7 @@ func (t *DispatchTool) Execute(ctx context.Context, input map[string]any) (*agen
 			failed++
 		}
 	}
-	sb.WriteString(fmt.Sprintf("## Parallel Dispatch Results\n\n"))
+	sb.WriteString("## Parallel Dispatch Results\n\n")
 	sb.WriteString(fmt.Sprintf("**Project:** %s\n", manifest.ProjectName))
 	sb.WriteString(fmt.Sprintf("**Model:** %s\n", t.dispatcher.coderClient.ModelName()))
 	sb.WriteString(fmt.Sprintf("**Tasks:** %d total, %d success, %d failed\n\n", len(results), success, failed))

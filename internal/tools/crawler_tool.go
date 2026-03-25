@@ -405,7 +405,7 @@ func (t *CrawlerTool) handleElements(sessionID string) (string, error) {
 		if len(elem.Attrs) > 0 {
 			for k, v := range elem.Attrs {
 				if k == "href" || k == "placeholder" || k == "type" {
-					sb.WriteString(fmt.Sprintf("    %s: %s\n", strings.Title(k), v))
+					sb.WriteString(fmt.Sprintf("    %s: %s\n", strings.ToUpper(k[:1])+k[1:], v))
 				}
 			}
 		}

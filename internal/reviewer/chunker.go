@@ -23,7 +23,7 @@ func ChunkRecentEvents(eventBus agent.EventBus, sessionID string, maxChunks int)
 	var chunks []ReviewChunk
 	var current ReviewChunk
 	current.SessionID = sessionID
-	current.ID = fmt.Sprintf("chunk-0")
+	current.ID = "chunk-0"
 	chunkIdx := 0
 
 	for _, evt := range events {

@@ -427,26 +427,6 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 	return output, nil
 }
 
-// buildContext assembles the message slice for the LLM call.
-// System prompt + memory injection + conversation history + new user message.
-func (a *Agent) buildContext(input TurnInput, facts []Fact) []Message {
-	messages := make([]Message, 0, len(input.History)+3)
-
-	// System prompt.
-	messages = append(messages, Message{
-		Role:    RoleSystem,
-		Content: a.buildSystemPrompt(facts),
-	})
-
-	// Conversation history (caller is responsible for trimming if needed).
-	messages = append(messages, input.History...)
-
-	// New user message.
-	messages = append(messages, input.UserMsg)
-
-	return messages
-}
-
 // buildContextWithPlan assembles the context with the Frontal Lobe's plan injected.
 // buildContextWithPlan assembles the context with the Frontal Lobe's plan injected.
 func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, plan *TaskPlan) []Message {
@@ -479,11 +459,6 @@ func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, plan *TaskPl
 	return messages
 }
 
-// buildSystemPrompt constructs the system prompt using the modular builder.
-// Pantheon architecture: modules are conditionally loaded based on the Frontal Lobe's plan.
-func (a *Agent) buildSystemPrompt(facts []Fact) string {
-	return a.buildSystemPromptWithPlan(facts, nil)
-}
 
 // buildSystemPromptWithPlan constructs the system prompt with plan-aware module selection.
 // This is the Pantheon's prompt assembly — only load what this turn needs.

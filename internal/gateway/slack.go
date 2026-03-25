@@ -336,6 +336,7 @@ func (g *SlackGateway) downloadFiles(ctx context.Context, files []slack.File) []
 }
 
 // downloadFile fetches a file from Slack's private URL using the bot token.
+//nolint:unused // kept for future Slack file download support
 func (g *SlackGateway) downloadFile(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
