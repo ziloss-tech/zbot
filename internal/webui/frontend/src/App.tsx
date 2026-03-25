@@ -14,6 +14,7 @@ import { DashboardPage } from './components/DashboardPage'
 import { KnowledgeBasePage } from './components/KnowledgeBasePage'
 import { useSSE } from './hooks/useSSE'
 import { useEventBus } from './hooks/useEventBus'
+import { useCortexStatus } from './hooks/useCortexStatus'
 import { useWorkflow } from './hooks/useWorkflow'
 import { useMetrics } from './hooks/useMetrics'
 import { submitPlan } from './lib/api'
@@ -25,6 +26,7 @@ export default function App() {
   const [reconnecting, setReconnecting] = useState(false)
   const metrics = useMetrics()
   const eventBus = useEventBus({ sessionID: 'web-chat' })
+  const cortexStatusState = useCortexStatus(eventBus.events, eventBus.cortexWorking)
 
   // Event bus passed directly to PaneManager → ChatPane as props (no window globals)
 
@@ -110,20 +112,13 @@ export default function App() {
             />
           </div>
           <div className="flex items-center">
-            <MetricsStrip metrics={metrics} />
-            <div className="flex items-center gap-3 px-4 py-2 ml-auto border-l border-white/[0.03]">
-              <div className="flex items-center gap-1.5">
-                <span className={`h-1.5 w-1.5 rounded-full ${eventBus.cortexWorking ? 'bg-cyan-400 animate-pulse' : eventBus.connected ? 'bg-emerald-400' : 'bg-red-400'}`} />
-                <span className="font-mono text-[9px] text-white/30">
-                  {eventBus.cortexWorking ? 'Cortex working' : eventBus.connected ? 'Cortex online' : 'disconnected'}
-                </span>
-              </div>
-              {eventBus.recentTools.length > 0 && eventBus.cortexWorking && (
-                <span className="font-mono text-[9px] text-cyan-400/50">
-                  {eventBus.recentTools[eventBus.recentTools.length - 1]?.summary}
-                </span>
-              )}
-            </div>
+            <MetricsStrip
+              metrics={metrics}
+              cortexStatus={cortexStatusState.status}
+              currentTool={cortexStatusState.currentTool}
+              elapsedMs={cortexStatusState.elapsedMs}
+              connected={eventBus.connected}
+            />
           </div>
         </div>
 

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { ActivityTimeline } from './ActivityTimeline'
 import type { WorkflowState, ChatMessage, ModelTier, ToolCallEvent } from '../lib/types'
 
 // Brain icon for Cortex (replaces Anthropic "A" logo)
@@ -523,8 +524,17 @@ export function ChatPane({ workflowState, className = '', eventBus }: ChatPanePr
           </motion.div>
         )}
 
+
+
         <div ref={endRef} />
       </div>
+
+      {/* Activity Timeline — persistent strip above input */}
+      <AnimatePresence>
+        {eventBus && (
+          <ActivityTimeline events={eventBus.events} cortexWorking={eventBus.cortexWorking} />
+        )}
+      </AnimatePresence>
 
       {/* Input */}
       <div className="border-t border-white/[0.04] p-3">
