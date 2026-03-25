@@ -20,6 +20,9 @@ service-account.json
 .DS_Store
 Thumbs.db
 
+# Node
+node_modules/
+
 # IDE
 .vscode/
 .idea/
@@ -42,6 +45,7 @@ tmp/
 
 # Binaries (compiled)
 /zbot-bin
+/zbot-run
 /memcli
 /zbot-v2
 zbot-v2
