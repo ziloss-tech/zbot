@@ -72,6 +72,7 @@ type Agent struct {
 	events       EventBus
 	logger       *slog.Logger
 	confirmStore *security.ConfirmationStore // Sprint 9: destructive op confirmation
+	modelRouter  ModelRouter                  // v2: benchmark-based model selection. Nil = skip router stage.
 }
 
 // SetConfirmationStore wires the confirmation gate for destructive tool calls.
@@ -83,6 +84,12 @@ func (a *Agent) SetConfirmationStore(cs *security.ConfirmationStore) {
 // If nil, cognitive stages are skipped and the agent falls back to single-call mode.
 func (a *Agent) SetCheapLLM(llm LLMClient) {
 	a.cheapLLM = llm
+}
+
+// SetModelRouter wires the benchmark-based model router for optimal LLM selection.
+// If nil, the router stage is skipped and the agent uses the default LLM.
+func (a *Agent) SetModelRouter(mr ModelRouter) {
+	a.modelRouter = mr
 }
 
 // GetTool returns a tool by name, for direct execution (e.g. after confirmation).
@@ -178,6 +185,13 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		ctx = WithModelHint(ctx, "opus")
 	}
 
+	// ── STAGE 0B: BENCHMARK ROUTER — Select optimal model ──────────────────
+	// The benchmark router uses hardcoded performance data to pick the best
+	// model for this specific task type (coding, math, reasoning, etc.).
+	// This runs AFTER the cognitive router's classification but BEFORE
+	// the plan — we need the plan's complexity to decide quality vs cost trade-off.
+	// This stage is deferred until after the plan is available (see Stage 2B below).
+
 	// ── STAGE 1: FRONTAL LOBE — Plan the approach ──────────────────────────
 	// Skip Frontal Lobe if Router says it's a direct answer (saves one cheapLLM call).
 	var plan *TaskPlan
@@ -194,6 +208,28 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		}
 	} else {
 		plan = a.planTask(ctx, input.SessionID, input.UserMsg.Content, a.cheapLLM)
+	}
+
+	// ── STAGE 2B: BENCHMARK ROUTER — Select optimal model ──────────────────
+	// Now that we have the plan, use it to inform the quality vs cost trade-off.
+	// Complex tasks prefer quality (highest score); simple tasks prefer cost-efficiency.
+	if a.modelRouter != nil {
+		taskCategory := a.modelRouter.ClassifyTask(input.UserMsg.Content)
+		preferQuality := (plan != nil && plan.Complexity == "complex") || input.ModelHint == "opus"
+		rec := a.modelRouter.BestModel(taskCategory, preferQuality)
+		if rec != nil {
+			a.logger.Info("benchmark router recommendation",
+				"task_category", taskCategory,
+				"model", rec.ModelName,
+				"score", rec.TaskScore,
+				"efficiency", rec.CostEfficiency,
+				"reason", rec.Reason,
+			)
+			// Use router's model if no explicit hint was given.
+			if input.ModelHint == "" && rec.ModelID != "" {
+				ctx = WithModelHint(ctx, rec.ModelID)
+			}
+		}
 	}
 
 	// ── STAGE 2: HIPPOCAMPUS — Load relevant memories ──────────────────────

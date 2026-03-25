@@ -257,6 +257,26 @@ type SecretsManager interface {
 // ErrNotSupported is returned by SecretsManager adapters that don't support write operations.
 var ErrNotSupported = fmt.Errorf("operation not supported by this secrets backend")
 
+// ModelRouter selects the optimal LLM based on task classification and benchmarks.
+// Adapter: internal/router/ (benchmark-based model selection).
+type ModelRouter interface {
+	// ClassifyTask maps a natural language description to a task category string.
+	ClassifyTask(description string) string
+
+	// BestModel returns the recommended model ID for a task category.
+	// preferQuality=true picks highest score; false picks best cost-efficiency.
+	BestModel(category string, preferQuality bool) *ModelRecommendation
+}
+
+// ModelRecommendation is the Router's output.
+type ModelRecommendation struct {
+	ModelID        string
+	ModelName      string
+	TaskScore      float64
+	CostEfficiency float64
+	Reason         string
+}
+
 // AuditLogger is the port for structured audit logging.
 // Every tool call, model call, and workflow event is logged here.
 type AuditLogger interface {

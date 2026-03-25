@@ -32,6 +32,13 @@ interface PlanSummary {
 
 interface ThalamusPaneProps {
   workflowState: WorkflowState
+  eventBus?: {
+    events: AgentEvent[]
+    connected: boolean
+    cortexWorking: boolean
+    recentTools: AgentEvent[]
+    clearEvents: () => void
+  }
   className?: string
   onClose?: () => void
 }
@@ -120,10 +127,17 @@ function EventChip({ event }: { event: AgentEvent }) {
     plan_complete: 'text-violet-300 border-violet-500/15',
     verify_start: 'text-amber-400 border-amber-500/20',
     verify_complete: 'text-emerald-400 border-emerald-500/20',
+    review_finding: 'text-orange-400 border-orange-500/20',
+    review_cycle: 'text-orange-300 border-orange-500/15',
+    review_error: 'text-red-400 border-red-500/20',
     tool_called: 'text-cyan-400 border-cyan-500/20',
     tool_result: 'text-cyan-300 border-cyan-500/15',
     tool_error: 'text-red-400 border-red-500/20',
     memory_loaded: 'text-blue-400 border-blue-500/20',
+    file_read: 'text-cyan-300 border-cyan-500/15',
+    file_write: 'text-amber-400 border-amber-500/20',
+    crawl_screenshot: 'text-green-400 border-green-500/20',
+    crawl_action: 'text-green-300 border-green-500/15',
     turn_start: 'text-white/40 border-white/10',
     turn_complete: 'text-emerald-300 border-emerald-500/15',
   }
@@ -139,7 +153,7 @@ function EventChip({ event }: { event: AgentEvent }) {
 
 // ─── Main Component ─────────────────────────────────────────────────────────
 
-export function ThalamusPane({ workflowState, className = '', onClose }: ThalamusPaneProps) {
+export function ThalamusPane({ workflowState, eventBus, className = '', onClose }: ThalamusPaneProps) {
   const [messages, setMessages] = useState<ThalamusMessage[]>([])
   const [plans, setPlans] = useState<PlanSummary[]>([])
   const [verifications, setVerifications] = useState<VerificationResult[]>([])
@@ -155,50 +169,46 @@ export function ThalamusPane({ workflowState, className = '', onClose }: Thalamu
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, plans, verifications, busEvents])
 
-  // ─── Consume real event bus via window.__zbotEvents ────────────────────
+  // ─── Consume real event bus via eventBus prop ──────────────────────────
   useEffect(() => {
-    const poll = setInterval(() => {
-      const rawEvents: AgentEvent[] = (window as any).__zbotEvents || []
-      if (rawEvents.length === 0) return
+    const rawEvents = eventBus?.events || []
+    if (rawEvents.length === 0) return
 
-      // Only process new events
-      const newEvents = rawEvents.filter(e => !processedEventsRef.current.has(e.id))
-      if (newEvents.length === 0) return
+    // Only process new events
+    const newEvents = rawEvents.filter(e => !processedEventsRef.current.has(e.id))
+    if (newEvents.length === 0) return
 
-      for (const evt of newEvents) {
-        processedEventsRef.current.add(evt.id)
+    for (const evt of newEvents) {
+      processedEventsRef.current.add(evt.id)
 
-        // Extract plan_complete into structured plan summary
-        if (evt.type === 'plan_complete' && evt.detail) {
-          setPlans(prev => [...prev, {
-            id: evt.id,
-            type: String(evt.detail?.type || 'unknown'),
-            complexity: String(evt.detail?.complexity || 'unknown'),
-            steps: Number(evt.detail?.steps || 0),
-            verification: String(evt.detail?.verification || 'none'),
-            timestamp: Date.now(),
-          }])
-        }
-
-        // Extract verify_complete into structured verification result
-        if (evt.type === 'verify_complete' && evt.detail) {
-          setVerifications(prev => [...prev, {
-            id: evt.id,
-            approved: Boolean(evt.detail?.approved),
-            confidence: Number(evt.detail?.confidence || 0),
-            issues: Array.isArray(evt.detail?.issues) ? evt.detail.issues as string[] : [],
-            suggestion: String(evt.detail?.suggestion || ''),
-            timestamp: Date.now(),
-          }])
-        }
+      // Extract plan_complete into structured plan summary
+      if (evt.type === 'plan_complete' && evt.detail) {
+        setPlans(prev => [...prev, {
+          id: evt.id,
+          type: String(evt.detail?.type || 'unknown'),
+          complexity: String(evt.detail?.complexity || 'unknown'),
+          steps: Number(evt.detail?.steps || 0),
+          verification: String(evt.detail?.verification || 'none'),
+          timestamp: Date.now(),
+        }])
       }
 
-      // Keep last 30 events for the bus strip
-      setBusEvents(rawEvents.slice(-30))
-    }, 300) // Poll every 300ms — fast enough for UI, light enough on CPU
+      // Extract verify_complete into structured verification result
+      if (evt.type === 'verify_complete' && evt.detail) {
+        setVerifications(prev => [...prev, {
+          id: evt.id,
+          approved: Boolean(evt.detail?.approved),
+          confidence: Number(evt.detail?.confidence || 0),
+          issues: Array.isArray(evt.detail?.issues) ? evt.detail.issues as string[] : [],
+          suggestion: String(evt.detail?.suggestion || ''),
+          timestamp: Date.now(),
+        }])
+      }
+    }
 
-    return () => clearInterval(poll)
-  }, [])
+    // Keep last 30 events for the bus strip
+    setBusEvents(rawEvents.slice(-30))
+  }, [eventBus?.events])
 
   // Show a system message when Thalamus first observes activity
   useEffect(() => {

@@ -127,3 +127,11 @@ func (m *SessionManager) SessionCount() int {
 
 	return len(m.sessions)
 }
+
+// SetEventBus wires the event bus after construction.
+// This is needed because the SessionManager is created before the event bus in wire.go.
+func (m *SessionManager) SetEventBus(eb agent.EventBus) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.eventBus = eb
+}
