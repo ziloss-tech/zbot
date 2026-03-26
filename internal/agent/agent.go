@@ -16,6 +16,7 @@ import (
 // ─── Model Hint Context ─────────────────────────────────────────────────────
 
 type ctxKeyModelHint struct{}
+type ctxKeyThinkingHint struct{}
 
 // WithModelHint attaches a model routing hint to the context.
 // Used by the LLM client's pickModel to override default selection.
@@ -26,6 +27,18 @@ func WithModelHint(ctx context.Context, hint string) context.Context {
 // ModelHintFromCtx reads the model hint from context (empty = use default).
 func ModelHintFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(ctxKeyModelHint{}).(string)
+	return v
+}
+
+// WithThinkingHint attaches a thinking control hint to the context.
+// "disabled" = skip extended thinking even for Sonnet/Opus.
+func WithThinkingHint(ctx context.Context, hint string) context.Context {
+	return context.WithValue(ctx, ctxKeyThinkingHint{}, hint)
+}
+
+// ThinkingHintFromCtx reads the thinking hint from context.
+func ThinkingHintFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyThinkingHint{}).(string)
 	return v
 }
 
@@ -283,11 +296,26 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 		output.OutputTokens += result.OutputTokens
 		output.TokensUsed += result.InputTokens + result.OutputTokens
 
+		// Emit thinking event if the model used extended thinking.
+		if result.Thinking != "" {
+			// Truncate to first 200 chars for the event summary (full text is in detail).
+			summary := result.Thinking
+			if len(summary) > 200 {
+				summary = summary[:200] + "..."
+			}
+			a.emit(ctx, input.SessionID, EventThinking, summary, map[string]any{
+				"model":          modelUsed,
+				"thinking_chars": len(result.Thinking),
+			})
+		}
+
 		// Append assistant message to running context (including any tool calls).
 		assistantMsg := Message{
-			Role:      RoleAssistant,
-			Content:   result.Content,
-			ToolCalls: result.ToolCalls,
+			Role:              RoleAssistant,
+			Content:           result.Content,
+			Thinking:          result.Thinking,
+			ThinkingSignature: result.ThinkingSignature,
+			ToolCalls:         result.ToolCalls,
 		}
 		messages = append(messages, assistantMsg)
 

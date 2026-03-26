@@ -25,6 +25,14 @@ const (
 
 	DefaultMaxTokens = 8192
 
+	// ThinkingMaxTokens is the total max_tokens when thinking is enabled.
+	// Must be large enough for both thinking budget + response.
+	ThinkingMaxTokens = 16000
+
+	// ThinkingBudgetTokens is the token budget for extended thinking.
+	// The model will use up to this many tokens for internal reasoning.
+	ThinkingBudgetTokens = 10000
+
 	// MaxImagesPerRequest is Claude's limit for image content blocks.
 	MaxImagesPerRequest = 20
 )
@@ -125,6 +133,16 @@ func (c *Client) Complete(ctx context.Context, messages []agent.Message, tools [
 		params.Tools = sdkTools
 	}
 
+	// 4b. Enable extended thinking for Sonnet/Opus (not Haiku).
+	// Extended thinking lets the model reason internally before responding,
+	// improving accuracy on complex tasks. Context hint "no_thinking" disables it.
+	thinkingHint := agent.ThinkingHintFromCtx(ctx)
+	if thinkingHint != "disabled" && model != ModelHaiku && !strings.Contains(model, "haiku") {
+		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(ThinkingBudgetTokens)
+		params.MaxTokens = int64(ThinkingMaxTokens)
+		c.logger.Debug("extended thinking enabled", "model", model, "budget", ThinkingBudgetTokens)
+	}
+
 	// 5. Call the API.
 	c.logger.Debug("anthropic.Complete calling API",
 		"model", model,
@@ -149,6 +167,10 @@ func (c *Client) Complete(ctx context.Context, messages []agent.Message, tools [
 		switch b := block.AsAny().(type) {
 		case anthropic.TextBlock:
 			result.Content += b.Text
+
+		case anthropic.ThinkingBlock:
+			result.Thinking = b.Thinking
+			result.ThinkingSignature = b.Signature
 
 		case anthropic.ToolUseBlock:
 			// Parse the input JSON into map[string]any.
@@ -317,9 +339,14 @@ func buildUserParam(msg agent.Message) anthropic.MessageParam {
 }
 
 // buildAssistantParam converts an agent.Message (role=assistant) into an
-// Anthropic SDK MessageParam, preserving both text and tool_use blocks.
+// Anthropic SDK MessageParam, preserving thinking, text, and tool_use blocks.
 func buildAssistantParam(msg agent.Message) anthropic.MessageParam {
 	var blocks []anthropic.ContentBlockParamUnion
+
+	// Thinking blocks MUST come first (required by API for multi-turn with thinking).
+	if msg.Thinking != "" && msg.ThinkingSignature != "" {
+		blocks = append(blocks, anthropic.NewThinkingBlock(msg.ThinkingSignature, msg.Thinking))
+	}
 
 	// Add text content if present.
 	if msg.Content != "" {

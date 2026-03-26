@@ -36,7 +36,7 @@ function eventToEntry(event: AgentEvent): TimelineEntry | null {
       return {
         ...base,
         icon: '🧠',
-        text: event.summary || 'Thinking...',
+        text: event.summary ? `Thinking: ${(event.summary).slice(0, 60)}...` : 'Thinking...',
         type: 'thinking',
       }
     case 'plan_complete':

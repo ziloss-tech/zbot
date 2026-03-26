@@ -13,15 +13,17 @@ import (
 
 // Message represents a single message in a conversation.
 type Message struct {
-	ID         string
-	SessionID  string
-	Role       Role
-	Content    string
-	Images     []ImageAttachment
-	ToolCalls  []ToolCall // populated on assistant messages that request tool use
-	ToolCallID string     // populated on tool-result messages (links to ToolCall.ID)
-	IsError    bool       // true if this tool result represents an error
-	CreatedAt  time.Time
+	ID                string
+	SessionID         string
+	Role              Role
+	Content           string
+	Thinking          string // extended thinking content (assistant messages only)
+	ThinkingSignature string // signature for echoing thinking blocks in multi-turn
+	Images            []ImageAttachment
+	ToolCalls         []ToolCall // populated on assistant messages that request tool use
+	ToolCallID        string     // populated on tool-result messages (links to ToolCall.ID)
+	IsError           bool       // true if this tool result represents an error
+	CreatedAt         time.Time
 }
 
 // Role distinguishes user, assistant, and system messages.
@@ -126,14 +128,16 @@ type LLMClient interface {
 
 // CompletionResult holds the model's response.
 type CompletionResult struct {
-	Content      string
-	ToolCalls    []ToolCall
-	StopReason   string
-	Model        string // actual model used (may differ from default due to routing)
-	InputTokens  int
-	OutputTokens int
-	CacheRead    int // prompt caching hits (v2)
-	CacheWrite   int // prompt caching writes (v2)
+	Content           string
+	Thinking          string // extended thinking content (if enabled)
+	ThinkingSignature string // signature for echoing thinking in multi-turn
+	ToolCalls         []ToolCall
+	StopReason        string
+	Model             string // actual model used (may differ from default due to routing)
+	InputTokens       int
+	OutputTokens      int
+	CacheRead         int // prompt caching hits (v2)
+	CacheWrite        int // prompt caching writes (v2)
 }
 
 // ToolDefinition describes a tool to the LLM.
@@ -318,6 +322,7 @@ const (
 	EventMemoryEnrich    EventType = "memory_enrich"
 	EventStallDetected   EventType = "stall_detected"
 	EventStallRecovered  EventType = "stall_recovered"
+	EventThinking        EventType = "thinking"
 
 	// Crawl event types — emitted by internal/crawler/ module
 	EventCrawlScreenshot EventType = "crawl_screenshot"
