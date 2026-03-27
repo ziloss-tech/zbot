@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/ziloss-tech/zbot/internal/memory"
 )
 
 // chatStreamEvent represents one SSE event in the chat stream.
@@ -104,6 +106,10 @@ func (s *Server) handleChatStreamAPI(w http.ResponseWriter, r *http.Request) {
 					writeSSE(chatStreamEvent{Type: "error", Content: res.err.Error()})
 				} else {
 					writeSSE(chatStreamEvent{Type: "done", Content: res.reply})
+					// Auto-save substantial replies to long-term memory.
+					if pgStore, ok := s.memStore.(*memory.Store); ok {
+						pgStore.AutoSave(r.Context(), "web-chat", res.reply)
+					}
 				}
 				return
 			case <-r.Context().Done():
@@ -122,6 +128,10 @@ done:
 			writeSSE(chatStreamEvent{Type: "error", Content: res.err.Error()})
 		} else {
 			writeSSE(chatStreamEvent{Type: "done", Content: res.reply})
+			// Auto-save substantial replies to long-term memory.
+			if pgStore, ok := s.memStore.(*memory.Store); ok {
+				pgStore.AutoSave(r.Context(), "web-chat", res.reply)
+			}
 		}
 	case <-time.After(30 * time.Second):
 		writeSSE(chatStreamEvent{Type: "error", Content: "agent timeout"})
