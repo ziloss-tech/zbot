@@ -174,6 +174,67 @@ type MemoryFlusher interface {
 	WriteDailyNote(ctx context.Context, entry string) error
 }
 
+// ─── THOUGHT PACKAGES (Memory Overhaul Phase 2) ─────────────────────────────
+
+// PackagePriority determines when a ThoughtPackage is injected.
+type PackagePriority int
+
+const (
+	PackageAlways   PackagePriority = 0 // identity, instructions, current priorities
+	PackageAuto     PackagePriority = 1 // auto-matched by keywords + plan context
+	PackageOnDemand PackagePriority = 2 // only when search_memory tool is called
+)
+
+// ThoughtPackage is a compressed, pre-organized block of memories.
+// Instead of searching 10K raw facts at runtime, the agent matches
+// against ~50-100 packages using keyword match (< 1ms, zero LLM cost).
+// Built nightly by the batch builder (Phase 3) from raw facts.
+type ThoughtPackage struct {
+	ID         string          `json:"id"`
+	Label      string          `json:"label"`       // e.g. "ghl/esler-cst", "projects/zbot"
+	Keywords   []string        `json:"keywords"`    // fast matching — no LLM needed
+	Embedding  []float32       `json:"-"`           // fallback similarity match
+	Content    string          `json:"content"`     // compressed, ready to inject
+	TokenCount int             `json:"token_count"` // pre-counted for budget
+	MemoryIDs  []string        `json:"memory_ids"`  // source facts
+	Priority   PackagePriority `json:"priority"`
+	Freshness  time.Time       `json:"freshness"`   // last refreshed
+	Version    int             `json:"version"`     // incremented on rebuild
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+}
+
+// PackageMatch is a scored result from MatchPackages.
+type PackageMatch struct {
+	Package ThoughtPackage
+	Score   float32 // 0.0-1.0, keyword + embedding fusion
+	Method  string  // "keyword", "embedding", or "priority"
+}
+
+// PackageStore is the port for Thought Package persistence and retrieval.
+// Phase 2: CRUD + keyword matching. Phase 4: wired into agent runtime.
+type PackageStore interface {
+	// SavePackage creates or updates a thought package.
+	SavePackage(ctx context.Context, pkg ThoughtPackage) error
+
+	// GetPackage retrieves a single package by ID.
+	GetPackage(ctx context.Context, id string) (*ThoughtPackage, error)
+
+	// ListPackages returns all packages, ordered by priority then freshness.
+	ListPackages(ctx context.Context) ([]ThoughtPackage, error)
+
+	// DeletePackage removes a package by ID.
+	DeletePackage(ctx context.Context, id string) error
+
+	// MatchPackages returns packages relevant to a query, scored and sorted.
+	// Uses keyword match first (fast), falls back to embedding similarity.
+	// tokenBudget limits total injected tokens (0 = no limit).
+	MatchPackages(ctx context.Context, query string, tokenBudget int) ([]PackageMatch, error)
+
+	// AlwaysPackages returns all Priority=0 packages (always injected).
+	AlwaysPackages(ctx context.Context) ([]ThoughtPackage, error)
+}
+
 // WorkflowStore is the port for task graph persistence.
 // Adapter: Postgres (same GCP Cloud SQL instance).
 type WorkflowStore interface {
