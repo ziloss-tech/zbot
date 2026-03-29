@@ -1,5 +1,5 @@
 # ZBOT Memory Overhaul — Baseline Report
-## Generated: 2026-03-27 13:50 MDT
+## Generated: 2026-03-28 18:20 MDT
 
 ### B2: Memory Count
 - Total memories in pgvector: 133
