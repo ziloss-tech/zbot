@@ -235,6 +235,29 @@ type PackageStore interface {
 	AlwaysPackages(ctx context.Context) ([]ThoughtPackage, error)
 }
 
+// ─── EXPERIENTIAL LEARNING (Memory Overhaul Phase 5) ────────────────────────
+
+// Lesson captures a mistake→correction pattern from Thalamus rejection.
+// When Thalamus rejects a response and revision succeeds, the pattern is
+// saved so ZBOT doesn't repeat the same mistake.
+type Lesson struct {
+	ID           string
+	Mistake      string    // what was wrong
+	Correction   string    // what fixed it
+	Context      string    // user query that triggered this
+	SessionID    string
+	TriggerCount int       // how many times this lesson matched
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// LessonStore is the port for experiential learning persistence.
+type LessonStore interface {
+	SaveLesson(ctx context.Context, lesson Lesson) error
+	SearchLessons(ctx context.Context, query string, limit int) ([]Lesson, error)
+	IncrementTrigger(ctx context.Context, id string) error
+}
+
 // WorkflowStore is the port for task graph persistence.
 // Adapter: Postgres (same GCP Cloud SQL instance).
 type WorkflowStore interface {

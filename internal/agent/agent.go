@@ -81,6 +81,7 @@ type Agent struct {
 	cheapLLM     LLMClient // Frontal Lobe + Thalamus use this (Haiku/Grok Fast). Nil = skip cognitive stages.
 	memory       MemoryStore
 	pkgStore     PackageStore // Phase 4: Thought Packages. Nil = fall back to raw vector search.
+	lessonStore  LessonStore  // Phase 5: Experiential learning. Nil = skip lesson capture/injection.
 	tools        map[string]Tool
 	audit        AuditLogger
 	events       EventBus
@@ -111,6 +112,13 @@ func (a *Agent) SetModelRouter(mr ModelRouter) {
 // Phase 4 of the Memory Overhaul.
 func (a *Agent) SetPackageStore(ps PackageStore) {
 	a.pkgStore = ps
+}
+
+// SetLessonStore wires the experiential learning store.
+// If nil, lessons are not captured or injected.
+// Phase 5 of the Memory Overhaul.
+func (a *Agent) SetLessonStore(ls LessonStore) {
+	a.lessonStore = ls
 }
 
 // GetTool returns a tool by name, for direct execution (e.g. after confirmation).
@@ -307,8 +315,25 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 			map[string]any{"count": len(facts), "method": "vector_search"})
 	}
 
+	// Phase 5: Search for relevant lessons from past mistakes.
+	var lessons []Lesson
+	if !skipMemory && a.lessonStore != nil {
+		var lessonErr error
+		lessons, lessonErr = a.lessonStore.SearchLessons(ctx, input.UserMsg.Content, 3)
+		if lessonErr != nil {
+			a.logger.Warn("lesson search failed", "err", lessonErr)
+		}
+		// Increment trigger count for matched lessons
+		for _, l := range lessons {
+			_ = a.lessonStore.IncrementTrigger(ctx, l.ID)
+		}
+		if len(lessons) > 0 {
+			a.logger.Info("lessons matched", "count", len(lessons))
+		}
+	}
+
 	// ── STAGE 3: CORTEX — Build context with plan injection ────────────────
-	messages := a.buildContextWithPlan(input, facts, matchedPkgs, plan)
+	messages := a.buildContextWithPlan(input, facts, matchedPkgs, lessons, plan)
 
 	// 3. Collect tool definitions to expose to the model.
 	toolDefs := make([]ToolDefinition, 0, len(a.tools))
@@ -452,12 +477,33 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 			revisionMsg := fmt.Sprintf("THALAMUS REVIEW - Your draft reply needs revision.\nIssue: %s\nPlease revise your response addressing this feedback.", suggestion)
 			messages = append(messages, Message{Role: RoleSystem, Content: revisionMsg})
 			
+			draftBefore := output.Reply // save original for lesson
 			revisedResult, revErr := a.llm.Complete(ctx, messages, nil) // no tools for revision
 			if revErr == nil && revisedResult.Content != "" {
 				output.Reply = revisedResult.Content
 				output.InputTokens += revisedResult.InputTokens
 				output.OutputTokens += revisedResult.OutputTokens
 				output.TokensUsed += revisedResult.InputTokens + revisedResult.OutputTokens
+
+				// Phase 5: Save lesson from this rejection→revision cycle.
+				if a.lessonStore != nil {
+					lesson := Lesson{
+						ID:        fmt.Sprintf("lesson-%s-%d", input.SessionID, time.Now().UnixMilli()),
+						Mistake:   suggestion, // what Thalamus flagged
+						Correction: fmt.Sprintf("Draft was revised. Original issue: %s", suggestion),
+						Context:   input.UserMsg.Content,
+						SessionID: input.SessionID,
+					}
+					if saveErr := a.lessonStore.SaveLesson(ctx, lesson); saveErr != nil {
+						a.logger.Warn("lesson save failed", "err", saveErr)
+					} else {
+						a.logger.Info("lesson captured from thalamus rejection",
+							"lesson_id", lesson.ID,
+							"mistake", suggestion[:min(len(suggestion), 80)],
+						)
+						_ = draftBefore // suppress unused warning; could be used for deeper lesson extraction later
+					}
+				}
 			}
 		}
 	}
@@ -501,11 +547,11 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 
 // buildContextWithPlan assembles the context with the Frontal Lobe's plan injected.
 // buildContextWithPlan assembles the context with the Frontal Lobe's plan injected.
-func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, pkgs []PackageMatch, plan *TaskPlan) []Message {
+func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, pkgs []PackageMatch, lessons []Lesson, plan *TaskPlan) []Message {
 	messages := make([]Message, 0, len(input.History)+4)
 
 	// System prompt with memory — now uses Pantheon's modular builder.
-	sysPrompt := a.buildSystemPromptWithPlan(facts, pkgs, plan)
+	sysPrompt := a.buildSystemPromptWithPlan(facts, pkgs, lessons, plan)
 
 	// Inject plan if available.
 	if plan != nil {
@@ -534,7 +580,7 @@ func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, pkgs []Packa
 
 // buildSystemPromptWithPlan constructs the system prompt with plan-aware module selection.
 // This is the Pantheon's prompt assembly — only load what this turn needs.
-func (a *Agent) buildSystemPromptWithPlan(facts []Fact, pkgs []PackageMatch, plan *TaskPlan) string {
+func (a *Agent) buildSystemPromptWithPlan(facts []Fact, pkgs []PackageMatch, lessons []Lesson, plan *TaskPlan) string {
 	// Build profile from plan (or use defaults if no plan).
 	profile := prompts.DefaultProfile()
 	if plan != nil {
@@ -587,7 +633,25 @@ func (a *Agent) buildSystemPromptWithPlan(facts []Fact, pkgs []PackageMatch, pla
 		base += memSection
 	}
 
+	// Phase 5: Inject relevant lessons from past mistakes.
+	if len(lessons) > 0 {
+		lessonSection := "\n\n## Lessons from Past Mistakes\nThese are patterns where your previous responses were corrected. Avoid repeating these mistakes:\n"
+		for _, l := range lessons {
+			lessonSection += fmt.Sprintf("- AVOID: %s (triggered %d times, context: %s)\n",
+				l.Mistake, l.TriggerCount, trimContext(l.Context, 60))
+		}
+		base += lessonSection
+	}
+
 	return base
+}
+
+// trimContext shortens a context string for display in lessons.
+func trimContext(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 // emit is a helper that publishes an event to the bus (nil-safe).
 func (a *Agent) emit(ctx context.Context, sessionID string, evtType EventType, summary string, detail map[string]any) {

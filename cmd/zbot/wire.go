@@ -578,6 +578,15 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 			ag.SetPackageStore(pkgStore)
 			logger.Info("thought packages wired — memory overhaul Phase 4 active")
 		}
+
+		// Phase 5: Wire lesson store for experiential learning.
+		lessonStore, lsErr := memory.NewLessonStore(ctx, pgDB, sharedEmbedder, logger, "zbot")
+		if lsErr != nil {
+			logger.Warn("lesson store init failed — experiential learning disabled", "err", lsErr)
+		} else {
+			ag.SetLessonStore(lessonStore)
+			logger.Info("experiential learning wired — memory overhaul Phase 5 active")
+		}
 	}
 
 	// Wire cheap LLM for Frontal Lobe (planning) + Thalamus (verification).
