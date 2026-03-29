@@ -622,7 +622,13 @@ func (a *Agent) buildSystemPromptWithPlan(facts []Fact, pkgs []PackageMatch, les
 	if len(pkgs) > 0 {
 		memSection := "\n\n## Memory Context (Thought Packages)\n"
 		for _, pm := range pkgs {
-			memSection += fmt.Sprintf("\n### %s\n%s\n", pm.Package.Label, pm.Package.Content)
+			content := pm.Package.Content
+			// Phase 6: Annotate stale packages with temporal caveat.
+			daysSince := int(time.Since(pm.Package.Freshness).Hours() / 24)
+			if daysSince > 23 {
+				content = fmt.Sprintf("[NOTE: This information is %d days old and may be outdated — verify before citing.]\n%s", daysSince, content)
+			}
+			memSection += fmt.Sprintf("\n### %s\n%s\n", pm.Package.Label, content)
 		}
 		base += memSection
 	} else if len(facts) > 0 {
