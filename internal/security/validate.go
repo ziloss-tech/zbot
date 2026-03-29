@@ -9,6 +9,7 @@ import (
 // allowedCodeLanguages are the only languages run_code accepts.
 var allowedCodeLanguages = map[string]bool{
 	"python3": true,
+	"python":  true, // alias — coderunner maps this to python3
 	"go":      true,
 	"node":    true,
 	"bash":    true,

@@ -211,8 +211,15 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 	// Apply Router's model tier hint if no explicit hint was given.
 	// Only escalate UP (to Opus) — never downgrade Cortex to cheap.
 	// The cheap cognitive stages (Router, Frontal Lobe, Thalamus) already use cheapLLM directly.
+	// Guard: only escalate for genuinely complex tasks, not simple tool-use requests.
 	if route != nil && input.ModelHint == "" && route.ModelTier == "strong" {
-		ctx = WithModelHint(ctx, "opus")
+		if route.Confidence > 0.7 && route.Classification != "tool_use" {
+			ctx = WithModelHint(ctx, "opus")
+			a.logger.Info("escalating to Opus", "classification", route.Classification, "confidence", route.Confidence)
+		} else {
+			a.logger.Info("skipping Opus escalation — not confident enough or simple tool-use",
+				"classification", route.Classification, "confidence", route.Confidence)
+		}
 	}
 
 	// ── STAGE 0B: BENCHMARK ROUTER — Select optimal model ──────────────────
@@ -349,8 +356,25 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 	//    or MaxToolRounds is hit.
 	output := &TurnOutput{}
 	invokedTools := map[string]struct{}{}
+	var confirmGateHits int // track confirmation gate blocks to prevent loops
 
 	for round := 0; round < a.cfg.MaxToolRounds; round++ {
+		// Cost circuit breaker: if we've spent more than $2 on a single turn, stop.
+		turnCost := float64(output.InputTokens)*0.000015 + float64(output.OutputTokens)*0.000075
+		if turnCost > 2.0 {
+			a.logger.Warn("cost circuit breaker triggered — aborting turn",
+				"cost_usd", turnCost, "round", round, "input_tokens", output.InputTokens, "output_tokens", output.OutputTokens)
+			output.Reply = fmt.Sprintf("I had to stop — this task was getting expensive ($%.2f). Let me try a simpler approach. What specifically do you need?", turnCost)
+			break
+		}
+		// Confirmation gate loop breaker: if the same tool keeps hitting the gate, stop retrying.
+		if confirmGateHits >= 2 {
+			a.logger.Warn("confirmation gate loop detected — aborting",
+				"gate_hits", confirmGateHits, "round", round)
+			output.Reply = "I need your approval to run code. Please confirm in the UI, or tell me to proceed."
+			break
+		}
+
 		callStart := time.Now()
 		result, err := a.llm.Complete(ctx, messages, toolDefs)
 		if err != nil {
@@ -404,6 +428,13 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 			return nil, fmt.Errorf("agent.Run executeTools round=%d: %w", round, err)
 		}
 		output.Files = append(output.Files, files...)
+
+		// Detect confirmation gate blocks to prevent infinite loops.
+		for _, tr := range toolResults {
+			if strings.Contains(tr.Content, "requires your confirmation") {
+				confirmGateHits++
+			}
+		}
 
 		// Append tool results as tool-role messages with their tool call IDs.
 		for _, tr := range toolResults {
