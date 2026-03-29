@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/ziloss-tech/zbot/internal/prompts"
@@ -255,7 +256,10 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 				"reason", rec.Reason,
 			)
 			// Use router's model if no explicit hint was given.
-			if input.ModelHint == "" && rec.ModelID != "" {
+			// Only accept model IDs that the primary LLM client can serve.
+			// Router may recommend models from other providers (Grok, Gemini, etc.)
+			// that aren't available through our Anthropic/DeepSeek clients.
+			if input.ModelHint == "" && rec.ModelID != "" && isServableModel(rec.ModelID) {
 				ctx = WithModelHint(ctx, rec.ModelID)
 			}
 		}
@@ -658,6 +662,25 @@ func trimContext(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// isServableModel checks if a model ID can be served by our LLM clients.
+// The router knows about 14+ models across providers, but we can only call
+// Anthropic (claude-*) and DeepSeek models. Others (Grok, Gemini, etc.)
+// must be filtered out to avoid 404 errors.
+func isServableModel(modelID string) bool {
+	servable := []string{
+		"claude-", "anthropic", // Anthropic models
+		"deepseek",             // DeepSeek via DeepInfra
+		"haiku", "sonnet", "opus", // Anthropic shorthand
+	}
+	lower := strings.ToLower(modelID)
+	for _, prefix := range servable {
+		if strings.Contains(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 // emit is a helper that publishes an event to the bus (nil-safe).
 func (a *Agent) emit(ctx context.Context, sessionID string, evtType EventType, summary string, detail map[string]any) {
