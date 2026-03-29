@@ -30,6 +30,8 @@ import (
 	skillMemory "github.com/ziloss-tech/zbot/internal/skills/memory"
 	skillSearch "github.com/ziloss-tech/zbot/internal/skills/search"
 	skillSheets "github.com/ziloss-tech/zbot/internal/skills/sheets"
+	skillSMS "github.com/ziloss-tech/zbot/internal/skills/sms"
+	skillDynamic "github.com/ziloss-tech/zbot/internal/skills/factory"
 	"github.com/ziloss-tech/zbot/internal/skills/mcpbridge"
 	"github.com/ziloss-tech/zbot/internal/factory"
 	"github.com/ziloss-tech/zbot/internal/parallel"
@@ -452,6 +454,30 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 		logger.Warn("Email skill skipped — SMTP secrets not available")
 	}
 
+	// SMS skill (Twilio).
+	twilioSID, _ := sm.Get(ctx, "twilio-account-sid")
+	twilioAuth, _ := sm.Get(ctx, "twilio-auth-token")
+	twilioFrom, _ := sm.Get(ctx, "twilio-from-number")
+	if twilioSID != "" && twilioAuth != "" {
+		skillRegistry.Register(skillSMS.NewSkill(twilioSID, twilioAuth, twilioFrom))
+		logger.Info("skill registered: sms")
+	} else {
+		logger.Warn("SMS skill skipped — Twilio secrets not available")
+	}
+
+	// Skill Factory — self-tool-builder. ZBOT creates its own tools at runtime.
+	skillsDir := filepath.Join(workspaceRoot, "skills")
+	dynFactory, dynErr := skillDynamic.NewFactory(skillsDir, logger)
+	if dynErr != nil {
+		logger.Warn("skill factory init failed", "err", dynErr)
+	} else {
+		if loadErr := dynFactory.LoadExistingSkills(); loadErr != nil {
+			logger.Warn("skill factory load failed", "err", loadErr)
+		}
+		skillRegistry.Register(dynFactory)
+		logger.Info("skill registered: factory", "dynamic_skills", len(dynFactory.GetDynamicTools()))
+	}
+
 
 	// ── MCP Bridge (dynamic MCP server loading) ─────────────────────────────
 	// Load external MCP servers as ZBOT skills. Config via:
@@ -511,6 +537,11 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// Merge core tools + skill tools.
 	allTools := append(coreTools, skillRegistry.AllTools()...)
 
+	// Add dynamic tools from skill factory (previously created by Cortex).
+	if dynFactory != nil {
+		allTools = append(allTools, dynFactory.GetDynamicTools()...)
+	}
+
 	// ── Agent ───────────────────────────────────────────────────────────────
 	agentCfg := agent.DefaultConfig()
 	agentCfg.SystemPrompt = prompts.ClaudeExecutorSystem + skillRegistry.SystemPromptAddendum()
@@ -537,6 +568,17 @@ func run(ctx context.Context, cfg platform.AppConfig, logger *slog.Logger) error
 	// Sprint 9: Wire confirmation store for destructive operation gates.
 	confirmStore := security.NewConfirmationStore()
 	ag.SetConfirmationStore(confirmStore)
+
+	// Phase 4: Wire Thought Package store for organized memory retrieval.
+	if pgDB != nil && sharedEmbedder != nil {
+		pkgStore, pkgErr := memory.NewPackageStore(ctx, pgDB, sharedEmbedder, logger, "zbot")
+		if pkgErr != nil {
+			logger.Warn("package store init failed — falling back to vector search", "err", pkgErr)
+		} else {
+			ag.SetPackageStore(pkgStore)
+			logger.Info("thought packages wired — memory overhaul Phase 4 active")
+		}
+	}
 
 	// Wire cheap LLM for Frontal Lobe (planning) + Thalamus (verification).
 	// Priority: DeepSeek V3.2 via DeepInfra ($0.14/M) > Haiku ($0.25/M) > primary model > disabled.
