@@ -80,6 +80,7 @@ type Agent struct {
 	llm          LLMClient
 	cheapLLM     LLMClient // Frontal Lobe + Thalamus use this (Haiku/Grok Fast). Nil = skip cognitive stages.
 	memory       MemoryStore
+	pkgStore     PackageStore // Phase 4: Thought Packages. Nil = fall back to raw vector search.
 	tools        map[string]Tool
 	audit        AuditLogger
 	events       EventBus
@@ -103,6 +104,13 @@ func (a *Agent) SetCheapLLM(llm LLMClient) {
 // If nil, the router stage is skipped and the agent uses the default LLM.
 func (a *Agent) SetModelRouter(mr ModelRouter) {
 	a.modelRouter = mr
+}
+
+// SetPackageStore wires the Thought Package store for organized memory retrieval.
+// If nil, the agent falls back to raw vector search via MemoryStore.Search().
+// Phase 4 of the Memory Overhaul.
+func (a *Agent) SetPackageStore(ps PackageStore) {
+	a.pkgStore = ps
 }
 
 // GetTool returns a tool by name, for direct execution (e.g. after confirmation).
@@ -246,25 +254,61 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 	}
 
 	// ── STAGE 2: HIPPOCAMPUS — Load relevant memories ──────────────────────
-	// Skip memory search if Router says no memory needed and confidence is high.
+	// Phase 4: Try Thought Packages first (< 1ms, zero LLM cost).
+	// Fall back to raw vector search if no packages available.
 	skipMemory := route != nil && route.Classification == "direct_answer" && route.Confidence > 0.9
 	var facts []Fact
+	var matchedPkgs []PackageMatch
 	if !skipMemory {
-		var memErr error
-		facts, memErr = a.memory.Search(ctx, input.UserMsg.Content, a.cfg.MemorySearchLimit)
-		if memErr != nil {
-			a.logger.Warn("memory search failed", "err", memErr)
-			facts = nil
+		// Try packages first
+		if a.pkgStore != nil {
+			var pkgErr error
+			matchedPkgs, pkgErr = a.pkgStore.MatchPackages(ctx, input.UserMsg.Content, 2000) // 2000 token budget
+			if pkgErr != nil {
+				a.logger.Warn("package match failed, falling back to vector search", "err", pkgErr)
+			}
+			// Always inject Priority=0 packages
+			alwaysPkgs, _ := a.pkgStore.AlwaysPackages(ctx)
+			for _, ap := range alwaysPkgs {
+				// Avoid duplicates
+				found := false
+				for _, mp := range matchedPkgs {
+					if mp.Package.ID == ap.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					matchedPkgs = append(matchedPkgs, PackageMatch{
+						Package: ap,
+						Score:   1.0,
+						Method:  "priority",
+					})
+				}
+			}
+		}
+		// Fall back to raw vector search if no packages matched
+		if len(matchedPkgs) == 0 {
+			var memErr error
+			facts, memErr = a.memory.Search(ctx, input.UserMsg.Content, a.cfg.MemorySearchLimit)
+			if memErr != nil {
+				a.logger.Warn("memory search failed", "err", memErr)
+				facts = nil
+			}
 		}
 	}
-	if len(facts) > 0 {
+	if len(matchedPkgs) > 0 {
+		a.emit(ctx, input.SessionID, EventMemoryLoaded,
+			fmt.Sprintf("Loaded %d thought packages", len(matchedPkgs)),
+			map[string]any{"count": len(matchedPkgs), "method": "packages"})
+	} else if len(facts) > 0 {
 		a.emit(ctx, input.SessionID, EventMemoryLoaded,
 			fmt.Sprintf("Loaded %d memories", len(facts)),
-			map[string]any{"count": len(facts)})
+			map[string]any{"count": len(facts), "method": "vector_search"})
 	}
 
 	// ── STAGE 3: CORTEX — Build context with plan injection ────────────────
-	messages := a.buildContextWithPlan(input, facts, plan)
+	messages := a.buildContextWithPlan(input, facts, matchedPkgs, plan)
 
 	// 3. Collect tool definitions to expose to the model.
 	toolDefs := make([]ToolDefinition, 0, len(a.tools))
@@ -457,11 +501,11 @@ func (a *Agent) Run(ctx context.Context, input TurnInput) (*TurnOutput, error) {
 
 // buildContextWithPlan assembles the context with the Frontal Lobe's plan injected.
 // buildContextWithPlan assembles the context with the Frontal Lobe's plan injected.
-func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, plan *TaskPlan) []Message {
+func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, pkgs []PackageMatch, plan *TaskPlan) []Message {
 	messages := make([]Message, 0, len(input.History)+4)
 
 	// System prompt with memory — now uses Pantheon's modular builder.
-	sysPrompt := a.buildSystemPromptWithPlan(facts, plan)
+	sysPrompt := a.buildSystemPromptWithPlan(facts, pkgs, plan)
 
 	// Inject plan if available.
 	if plan != nil {
@@ -490,7 +534,7 @@ func (a *Agent) buildContextWithPlan(input TurnInput, facts []Fact, plan *TaskPl
 
 // buildSystemPromptWithPlan constructs the system prompt with plan-aware module selection.
 // This is the Pantheon's prompt assembly — only load what this turn needs.
-func (a *Agent) buildSystemPromptWithPlan(facts []Fact, plan *TaskPlan) string {
+func (a *Agent) buildSystemPromptWithPlan(facts []Fact, pkgs []PackageMatch, plan *TaskPlan) string {
 	// Build profile from plan (or use defaults if no plan).
 	profile := prompts.DefaultProfile()
 	if plan != nil {
@@ -528,8 +572,14 @@ func (a *Agent) buildSystemPromptWithPlan(facts []Fact, plan *TaskPlan) string {
 		now.Format("Monday"))
 	base += temporal
 
-	// Inject relevant memories.
-	if len(facts) > 0 {
+	// Inject memory — prefer Thought Packages over raw facts.
+	if len(pkgs) > 0 {
+		memSection := "\n\n## Memory Context (Thought Packages)\n"
+		for _, pm := range pkgs {
+			memSection += fmt.Sprintf("\n### %s\n%s\n", pm.Package.Label, pm.Package.Content)
+		}
+		base += memSection
+	} else if len(facts) > 0 {
 		memSection := "\n\n## Relevant Memory\n"
 		for _, f := range facts {
 			memSection += fmt.Sprintf("- %s (saved: %s)\n", f.Content, f.CreatedAt.Format("2006-01-02"))
